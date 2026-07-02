@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.shibuya.worm.spotify</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>$(WORM_SPOTIFY_CALLBACK_SCHEME)</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.shibuya.worm.google</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>$(WORM_GOOGLE_CALLBACK_SCHEME)</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Worm reads your Apple Music library, listening history, and recommendations to build your music personality node.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Worm reads your calendar events, attendees, locations, recurrence rules, alarms, and notes to build your calendar personality node.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Worm reads your contacts, groups, relationship labels, organizations, birthdays, social handles, and communication metadata to build your contacts personality node.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Worm reads your photo library to capture every available detail of each photo — dates, location, dimensions, and embedded metadata — to build your photos personality node.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Worm reads your reminders, lists, due dates, completion state, recurrence rules, alarms, locations, and notes to build your calendar personality node.</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>WormAnthropicAPIKey</key>
+	<string>$(WORM_ANTHROPIC_API_KEY)</string>
+	<key>WormAnthropicBaseURL</key>
+	<string>$(WORM_ANTHROPIC_BASE_URL)</string>
+	<key>WormGoogleClientID</key>
+	<string>$(WORM_GOOGLE_CLIENT_ID)</string>
+	<key>WormGoogleRedirectURI</key>
+	<string>$(WORM_GOOGLE_REDIRECT_URI)</string>
+	<key>WormSpotifyClientID</key>
+	<string>$(WORM_SPOTIFY_CLIENT_ID)</string>
+	<key>WormSpotifyRedirectURI</key>
+	<string>$(WORM_SPOTIFY_REDIRECT_URI)</string>
+</dict>
+</plist>

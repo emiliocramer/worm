@@ -1,0 +1,16 @@
+// Copy to Config/Production.xcconfig for Release/distribution builds.
+// Do not commit the copy.
+//
+// Production iOS builds should use a server-side Anthropic proxy and should not
+// embed WORM_ANTHROPIC_API_KEY in the app bundle.
+
+WORM_ANTHROPIC_API_KEY =
+WORM_ANTHROPIC_BASE_URL = https:/$()/api.example.com/anthropic
+
+WORM_SPOTIFY_CLIENT_ID =
+WORM_SPOTIFY_REDIRECT_URI = com.shibuya.worm.spotify-auth:/$()/oauth-callback
+WORM_SPOTIFY_CALLBACK_SCHEME = com.shibuya.worm.spotify-auth
+
+WORM_GOOGLE_CLIENT_ID =
+WORM_GOOGLE_REDIRECT_URI = com.shibuya.worm.google-auth:/oauth2redirect
+WORM_GOOGLE_CALLBACK_SCHEME = com.shibuya.worm.google-auth
