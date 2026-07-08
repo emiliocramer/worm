@@ -12,6 +12,9 @@ struct ProfileView: View {
     @Environment(SelfieNode.self) private var selfie
     @Environment(TasteProfile.self) private var profile
 
+    @State private var isSimulatingFirstInsight = false
+    @State private var simulatedFirstInsight: Insight?
+
     var body: some View {
         List {
             graphHealthSection
@@ -48,6 +51,29 @@ struct ProfileView: View {
             metric("Private read", profile.read == nil ? "Empty" : "Ready")
             NavigationLink(value: NodeRoute.profileChat) {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
+            }
+            Button {
+                Task { await simulateFirstInsight() }
+            } label: {
+                Label(isSimulatingFirstInsight ? "Simulating First Insight" : "Simulate First Insight", systemImage: "sparkles")
+            }
+            .disabled(isSimulatingFirstInsight || !spotify.isAuthorized || profile.isSynthesizing)
+            if !spotify.isAuthorized {
+                Text("Connect Spotify to simulate the onboarding first insight.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let simulatedFirstInsight {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Latest simulation")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(simulatedFirstInsight.line)
+                    Text(simulatedFirstInsight.evidence)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
             }
             if profile.isSynthesizing {
                 Label("Synthesizing", systemImage: "sparkles")
@@ -393,18 +419,33 @@ struct ProfileView: View {
     }
 
     private func refreshBrainSlices() {
-        let context = BrainSliceBuilder.context(
+        let context = brainInputs.context(read: profile.read, insights: profile.insights)
+        profile.ingest(context.slices)
+    }
+
+    private var brainInputs: BrainInputSet {
+        BrainInputSet(
             spotify: spotify,
             appleMusic: appleMusic,
             youtube: youtube,
             contacts: contacts,
             photos: photos,
             calendar: calendar,
-            selfie: selfie,
-            read: profile.read,
-            insights: profile.insights
+            selfie: selfie
         )
-        profile.ingest(context.slices)
+    }
+
+    private func simulateFirstInsight() async {
+        guard !isSimulatingFirstInsight else { return }
+        isSimulatingFirstInsight = true
+        defer { isSimulatingFirstInsight = false }
+
+        simulatedFirstInsight = await FirstInsightPipeline.runSpotifyFirstInsight(
+            spotify: spotify,
+            profile: profile,
+            selfie: selfie
+        )
+        refreshBrainSlices()
     }
 }
 

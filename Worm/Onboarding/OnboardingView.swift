@@ -518,92 +518,17 @@ struct OnboardingView: View {
     private func runFTUE() async {
         guard phase == .working else { return }
 
-        // First reveal is Spotify-owned. Pull the fast taste surface before the
-        // long deep sync so saved shows / episodes cannot leave Spotify empty.
-        await spotify.syncOnboardingTastePreview()
-        _ = Task { await spotify.syncEverything() }   // finish the full node in the background
-
-        let previousInsightIDs = Set(profile.insights.map(\.id))
-        await profile.synthesize(slices: [BrainSliceBuilder.spotifySlice(from: spotify)], mode: .quick)
-        profile.ingest([BrainSliceBuilder.selfieSlice(from: selfie)])
-
         guard !Task.isCancelled else { return }
-        if let insight = strongestInsight(preferredNewerThan: previousInsightIDs) {
+        if let insight = await FirstInsightPipeline.runSpotifyFirstInsight(
+            spotify: spotify,
+            profile: profile,
+            selfie: selfie
+        ) {
             reveal(insight)
             try? await Task.sleep(for: .seconds(1.1))
         }
 
         withAnimation(.easeOut(duration: 0.4)) { canContinue = true }
-    }
-
-    private func strongestInsight(preferredNewerThan previousInsightIDs: Set<String>) -> Insight? {
-        let candidates = profile.insights.filter { !revealedIDs.contains($0.id) }
-        let newCandidates = candidates.filter { !previousInsightIDs.contains($0.id) }
-        return strongest(newCandidates) ?? spotifyFallbackInsight()
-    }
-
-    private func strongest(_ candidates: [Insight]) -> Insight? {
-        candidates.sorted {
-            if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
-            return $0.line.count < $1.line.count
-        }.first
-    }
-
-    private func spotifyFallbackInsight() -> Insight? {
-        let features = SpotifyFeatureExtractor.extract(from: spotify)
-        if let artist = features.rideOrDie.first {
-            return Insight(
-                line: "You keep \(artist) close across every season.",
-                evidence: "Artist appears across Spotify time ranges",
-                confidence: 0.7,
-                source: .spotify
-            )
-        }
-        if features.recentTopArtists.count >= 2 {
-            return Insight(
-                line: "Lately, \(features.recentTopArtists[0]) and \(features.recentTopArtists[1]) are steering the room.",
-                evidence: "Recent Spotify top artists",
-                confidence: 0.68,
-                source: .spotify
-            )
-        }
-        if let genre = features.topGenres.first {
-            return Insight(
-                line: "Your center of gravity is \(genreLabel(genre)).",
-                evidence: "Dominant Spotify genre",
-                confidence: 0.64,
-                source: .spotify
-            )
-        }
-        if let playlist = features.playlistTitles.first {
-            return Insight(
-                line: "You file songs under little rooms like \(playlist).",
-                evidence: "Owned Spotify playlist title",
-                confidence: 0.62,
-                source: .spotify
-            )
-        }
-        if let track = spotify.topTracksShort.first {
-            return Insight(
-                line: "You let \(track.name) set the temperature.",
-                evidence: "Recent Spotify top track",
-                confidence: 0.62,
-                source: .spotify
-            )
-        }
-        guard spotify.isAuthorized else { return nil }
-        return Insight(
-            line: "You keep your Spotify profile quiet.",
-            evidence: "Spotify connected with little populated music history",
-            confidence: 0.6,
-            source: .spotify
-        )
-    }
-
-    private func genreLabel(_ raw: String) -> String {
-        raw.split(separator: "(").first?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? raw.lowercased()
     }
 
     private func reveal(_ insight: Insight) {

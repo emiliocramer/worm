@@ -776,6 +776,18 @@ final class SpotifyMusicNode {
             return (page.items, page.next, page.total)
         }) ?? []
 
+        // One page each of recent plays and library saves: cheap calls that give
+        // the first-insight dossier its timestamps (played-at, added-at). The
+        // background full sync supersedes both.
+        var previewRecentlyPlayed: [SpotifyRecentlyPlayedItem] = []
+        if scopes.contains("user-read-recently-played") {
+            previewRecentlyPlayed = (try? await dedupedRecentlyPlayed(token: token)) ?? []
+        }
+        var previewSavedTracks: [SpotifySavedTrack] = []
+        if scopes.contains("user-library-read") {
+            previewSavedTracks = (try? await api.fetchSavedTracks(accessToken: token, limit: Self.pageSize, offset: 0).items) ?? []
+        }
+
         profile = previewProfile
         topTracksShort = previewTopTracksShort
         topTracksMedium = previewTopTracksMedium
@@ -784,6 +796,8 @@ final class SpotifyMusicNode {
         topArtistsMedium = previewTopArtistsMedium
         topArtistsLong = previewTopArtistsLong
         playlists = previewPlaylists
+        if !previewRecentlyPlayed.isEmpty { recentlyPlayed = previewRecentlyPlayed }
+        if !previewSavedTracks.isEmpty { savedTracks = previewSavedTracks }
         lastSyncedAt = Date()
         saveCachedSnapshot()
         report(nil)

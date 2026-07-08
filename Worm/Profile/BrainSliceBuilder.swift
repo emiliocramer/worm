@@ -104,7 +104,8 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.9 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
-            novelty: spotifyNovelty(node)
+            novelty: spotifyNovelty(node),
+            dossier: populated ? BrainDossier.spotify(from: node) : nil
         )
     }
 
@@ -156,7 +157,8 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.82 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
-            novelty: appleMusicNovelty(node)
+            novelty: appleMusicNovelty(node),
+            dossier: populated ? BrainDossier.appleMusic(from: node) : nil
         )
     }
 

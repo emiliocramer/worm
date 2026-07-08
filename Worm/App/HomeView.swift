@@ -7,8 +7,10 @@ import SwiftUI
 /// The developer node-graph still lives behind a Liquid Glass button in the
 /// top-left when `DevFlags.showGraphButton` is set.
 struct HomeView: View {
+    var allowsDiggingHaptics = true
+
     var body: some View {
-        DiggingView()
+        DiggingView(allowsHaptics: allowsDiggingHaptics)
             .overlay(alignment: .topTrailing) {
                 NavigationLink(value: NodeRoute.profile) {
                     Image(systemName: "person.crop.circle")

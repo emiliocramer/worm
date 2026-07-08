@@ -97,10 +97,19 @@ final class TasteProfile {
 
     /// Synthesize from node slices. Onboarding may pass only Spotify; the full
     /// profile screen passes every available node. The brain owns Claude.
-    func synthesize(slices newSlices: [NodeBrainSlice], mode: BrainSynthesisMode = .deep) async {
+    @discardableResult
+    func synthesize(
+        slices newSlices: [NodeBrainSlice],
+        mode: BrainSynthesisMode = .deep,
+        kind: BrainSynthesisKind = .profile,
+        useOnlyProvidedSlices: Bool = false,
+        avoidExistingInsights: Bool = true
+    ) async -> [Insight] {
         ingest(newSlices)
-        let context = currentContext
-        guard context.hasSignal else { return }
+        let context = useOnlyProvidedSlices
+            ? BrainContext(slices: newSlices, read: nil, insights: [])
+            : currentContext
+        guard context.hasSignal else { return [] }
 
         isSynthesizing = true
         defer { isSynthesizing = false }
@@ -109,17 +118,20 @@ final class TasteProfile {
             let result = try await synthesizer.synthesize(
                 context,
                 mode: mode,
-                avoiding: insights.map(\.line)
+                kind: kind,
+                avoiding: avoidExistingInsights ? insights.map(\.line) : []
             )
             if !result.insights.isEmpty { read = result.read }
-            merge(result.insights, source: .profile)
+            let acceptedInsights = merge(result.insights, source: .profile)
             lastSynthesizedAt = Date()
             lastError = nil
             save()
             InsightLog.recordSynthesis(context: context, result: result)
+            return acceptedInsights
         } catch {
             lastError = error.localizedDescription
             InsightLog.recordSynthesisError(error, context: context)
+            return []
         }
     }
 
@@ -146,29 +158,40 @@ final class TasteProfile {
 
         var rejected: [String] = []
         do {
-            for _ in 0..<3 {
+            // Each model call returns a ranked candidate list; walk it through the
+            // local novelty filter and catalog verification and surface the first
+            // survivor. A fresh model call happens only when the whole list dies.
+            for _ in 0..<2 {
                 let query = BrainQuery(text: trimmed, rejectedRecommendations: rejected)
                 var result = try await synthesizer.answer(query, context: context)
-                if let recommendation = result.recommendation,
-                   let issue = context.noveltyIssue(for: recommendation) {
-                    rejected.append("\(recommendation.artist) - \(recommendation.title): \(issue)")
-                    continue
+                let candidates = result.rankedCandidates
+
+                if candidates.isEmpty {
+                    result = result.choosing(nil)
+                    append(answer: result)
+                    InsightLog.recordQuery(query: query, context: context, result: result)
+                    return result
                 }
-                if let recommendation = result.recommendation,
-                   let verifyRecommendation {
-                    let verification = await verifyRecommendation(recommendation)
-                    guard verification.isVerified else {
-                        rejected.append("\(recommendation.artist) - \(recommendation.title): \(verification.message)")
+
+                for candidate in candidates {
+                    if let issue = context.noveltyIssue(for: candidate) {
+                        rejected.append("\(candidate.artist) - \(candidate.title): \(issue)")
                         continue
                     }
-                    result = result.withCatalogVerification(verification)
+                    var chosen = result.choosing(candidate)
+                    if let verifyRecommendation {
+                        let verification = await verifyRecommendation(candidate)
+                        guard verification.isVerified else {
+                            rejected.append("\(candidate.artist) - \(candidate.title): \(verification.message)")
+                            continue
+                        }
+                        chosen = chosen.withCatalogVerification(verification)
+                    }
+                    chosen = chosen.withNoveltyStatus("Passed local novelty filters.")
+                    append(answer: chosen)
+                    InsightLog.recordQuery(query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context, result: chosen)
+                    return chosen
                 }
-                if result.recommendation != nil {
-                    result = result.withNoveltyStatus("Passed local novelty filters.")
-                }
-                append(answer: result)
-                InsightLog.recordQuery(query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context, result: result)
-                return result
             }
 
             let fallback = BrainAnswer(
@@ -220,18 +243,25 @@ final class TasteProfile {
         save()
     }
 
-    private func merge(_ raw: [BrainSynthesizer.SynthesisResult.RawInsight], source: Insight.Source) {
+    private func merge(_ raw: [BrainSynthesizer.SynthesisResult.RawInsight], source: Insight.Source) -> [Insight] {
+        var accepted: [Insight] = []
         for item in raw where item.confidence >= Self.minConfidence && Self.passesAudit(item.line) {
             let insight = Insight(line: item.line, evidence: item.evidence, confidence: item.confidence, source: source)
+            accepted.append(insight)
             if !insights.contains(where: { $0.id == insight.id }) {
                 insights.append(insight)
             }
         }
+        return accepted
     }
 
     private static func passesAudit(_ line: String) -> Bool {
         if line.contains("—") || line.contains("–") { return false }
         if line.split(whereSeparator: { $0 == " " }).count > maxWords { return false }
+        // A worm line is one second-person sentence, never an enumeration.
+        // Colon/semicolon lines are evidence dumps wearing a line's clothes.
+        if line.contains(":") || line.contains(";") { return false }
+        if !line.lowercased().contains("you") { return false }
         return true
     }
 

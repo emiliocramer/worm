@@ -11,7 +11,7 @@ struct RootView: View {
             NavigationStack {
                 Group {
                     if hasCompletedOnboarding {
-                        HomeView()
+                        HomeView(allowsDiggingHaptics: !showSplash)
                     } else {
                         OnboardingView()
                     }

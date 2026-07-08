@@ -8,6 +8,7 @@ struct ProfileChatView: View {
     @Environment(ContactsNode.self) private var contacts
     @Environment(PhotosNode.self) private var photos
     @Environment(CalendarNode.self) private var calendar
+    @Environment(SelfieNode.self) private var selfie
     @Environment(TasteProfile.self) private var profile
 
     @State private var draft = "recommend me a new song"
@@ -168,15 +169,18 @@ struct ProfileChatView: View {
     }
 
     private func liveContext() -> BrainContext {
-        BrainSliceBuilder.context(
+        brainInputs.context(read: profile.read, insights: profile.insights)
+    }
+
+    private var brainInputs: BrainInputSet {
+        BrainInputSet(
             spotify: spotify,
             appleMusic: appleMusic,
             youtube: youtube,
             contacts: contacts,
             photos: photos,
             calendar: calendar,
-            read: profile.read,
-            insights: profile.insights
+            selfie: selfie
         )
     }
 
@@ -309,5 +313,6 @@ struct ProfileChatView: View {
     .environment(ContactsNode())
     .environment(PhotosNode())
     .environment(CalendarNode())
+    .environment(SelfieNode())
     .environment(TasteProfile())
 }

@@ -22,11 +22,20 @@ enum BrainRetriever {
     ) -> BrainRetrievedContext {
         let intent = classify(query)
         let queryTerms = expandedTerms(for: intent, base: terms(in: query))
-        let graphSummary = context.slices.map { slice in
+        var graphSummary = context.slices.map { slice in
             "\(slice.title): \(slice.health), populated \(slice.isPopulated ? "yes" : "no"), confidence \(String(format: "%.2f", slice.confidence))"
         }
+        if let read = context.read, !read.isEmpty {
+            graphSummary.append("Profile read: \(read)")
+        }
+        if !context.insights.isEmpty {
+            graphSummary.append("Surfaced insights: \(context.insights.prefix(6).map(\.line).joined(separator: " | "))")
+        }
 
-        let scored = candidates(from: context)
+        let graphEdges = graphEdgeCandidates(from: context)
+        graphSummary.append(contentsOf: graphEdges.prefix(8).map(\.text))
+
+        let scored = (candidates(from: context) + graphEdges)
             .map { candidate -> BrainRetrievalHit? in
                 let score = score(candidate, queryTerms: queryTerms, intent: intent)
                 guard score > 0 else { return nil }
@@ -129,6 +138,30 @@ enum BrainRetriever {
         }
     }
 
+    private static func graphEdgeCandidates(from context: BrainContext) -> [Candidate] {
+        let slices = context.populatedSlices
+        guard slices.count >= 2 else { return [] }
+
+        var result: [Candidate] = []
+        for leftIndex in slices.indices {
+            for rightIndex in slices.indices where rightIndex > leftIndex {
+                let left = slices[leftIndex]
+                let right = slices[rightIndex]
+                let text = edgeText(left, right)
+                guard !text.isEmpty else { continue }
+                result.append(Candidate(
+                    nodeID: left.nodeID,
+                    kind: "graph-edge/\(right.title)",
+                    text: text,
+                    kindWeight: 1.9,
+                    confidence: min(left.confidence, right.confidence),
+                    freshness: newer(left.freshness, right.freshness)
+                ))
+            }
+        }
+        return result
+    }
+
     private static func candidate(
         _ slice: NodeBrainSlice,
         kind: String,
@@ -179,14 +212,20 @@ enum BrainRetriever {
             return 1.35
         case (.musicRecommendation, .calendar):
             return 1.15
+        case (.musicRecommendation, .selfie):
+            return 1.25
         case (.music, .spotify), (.music, .appleMusic):
             return 2.0
         case (.music, .youtube):
             return 1.45
         case (.music, .contacts):
             return 1.25
+        case (.music, .selfie):
+            return 0.9
         case (.visual, .photos):
             return 2.2
+        case (.visual, .selfie):
+            return 2.15
         case (.visual, .contacts):
             return 0.9
         case (.visual, .youtube):
@@ -210,6 +249,40 @@ enum BrainRetriever {
         if age < 45 * day { return 1.0 }
         if age < 180 * day { return 0.92 }
         return 0.82
+    }
+
+    private static func edgeText(_ left: NodeBrainSlice, _ right: NodeBrainSlice) -> String {
+        let leftSignal = compactSignal(left)
+        let rightSignal = compactSignal(right)
+        guard !leftSignal.isEmpty, !rightSignal.isEmpty else { return "" }
+        return "Connection: \(left.title) + \(right.title): \(leftSignal) | \(rightSignal)"
+    }
+
+    private static func compactSignal(_ slice: NodeBrainSlice) -> String {
+        var parts: [String] = []
+        if !slice.summary.isEmpty {
+            parts.append(slice.summary)
+        }
+        parts.append(contentsOf: slice.chunks.prefix(2))
+        if parts.isEmpty {
+            parts.append(contentsOf: slice.evidence.prefix(2))
+        }
+        return parts
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func newer(_ lhs: Date?, _ rhs: Date?) -> Date? {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?):
+            return max(lhs, rhs)
+        case let (lhs?, nil):
+            return lhs
+        case let (nil, rhs?):
+            return rhs
+        case (nil, nil):
+            return nil
+        }
     }
 
     // MARK: - Text Helpers

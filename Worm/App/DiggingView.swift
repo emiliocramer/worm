@@ -9,6 +9,8 @@ import SwiftUI
 ///
 /// First version: the slivers are just colors. Later they become real content.
 struct DiggingView: View {
+    var allowsHaptics = true
+
     private let paper = Color(red: 0.97, green: 0.96, blue: 0.93)
     private let sheet = Color(red: 0.62, green: 0.61, blue: 0.59)
 
@@ -43,7 +45,9 @@ struct DiggingView: View {
                     draw(in: &context, size: size, time: t)
                 }
             }
-            .task(id: geo.size.height) { await runHaptics(height: geo.size.height) }
+            .task(id: HapticsTaskKey(height: geo.size.height, allowsHaptics: allowsHaptics)) {
+                await runHaptics(height: geo.size.height)
+            }
         }
         .background(paper)
         .ignoresSafeArea()
@@ -159,6 +163,7 @@ struct DiggingView: View {
     /// A firm tap each time the comb crosses a sheet, plus a heavier thunk when
     /// the stack heaves up to fresh pages.
     private func runHaptics(height: CGFloat) async {
+        guard allowsHaptics else { return }
         guard height > 0 else { return }
         var lastSheet = Int.min
         var lastShiftCycle = -1
@@ -171,15 +176,20 @@ struct DiggingView: View {
                 if sheetIndex != lastSheet {
                     lastSheet = sheetIndex
                     if finger >= 0, finger <= height {
-                        await Haptics.tick()
+                        Haptics.tick()
                     }
                 }
             } else if completed != lastShiftCycle {
                 lastShiftCycle = completed       // one thunk as the stack advances
-                await Haptics.impact(.medium)
+                Haptics.impact(.medium)
             }
             try? await Task.sleep(for: .seconds(0.012))
         }
+    }
+
+    private struct HapticsTaskKey: Hashable {
+        let height: CGFloat
+        let allowsHaptics: Bool
     }
 }
 

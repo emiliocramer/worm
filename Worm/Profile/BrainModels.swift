@@ -28,10 +28,39 @@ enum BrainSynthesisMode: String, Codable {
     case quick
     case deep
 
-    var effort: String {
+    /// Effort for the hunt stage. Hunting is coverage work under explicit
+    /// instructions; `quick` (the ~20s onboarding budget) runs it at medium and
+    /// lets the judge hold the quality bar.
+    var huntEffort: String {
         switch self {
-        case .quick: return "low"
+        case .quick: return "medium"
         case .deep: return "high"
+        }
+    }
+
+    /// Effort for the judge+write stage. `deep` pulls are time-unbounded.
+    var judgeEffort: String {
+        switch self {
+        case .quick: return "high"
+        case .deep: return "xhigh"
+        }
+    }
+
+    /// Fast mode (same model, up to 2.5x output speed, premium price) for the
+    /// latency-bound first insight; deep pulls take the cheap slow path.
+    var speed: String? {
+        switch self {
+        case .quick: return "fast"
+        case .deep: return nil
+        }
+    }
+
+    /// How many parallel hunt passes to run. Passes run concurrently, so the
+    /// first insight gets both lens sets at no wall-clock cost.
+    var huntPasses: Int {
+        switch self {
+        case .quick: return 2
+        case .deep: return 2
         }
     }
 }
@@ -194,6 +223,9 @@ struct NodeBrainSlice: Codable, Hashable, Identifiable {
     let confidence: Double
     let health: String
     let novelty: BrainNoveltySet
+    /// Item-level evidence document for synthesis (see `BrainDossier`). Optional so
+    /// older persisted snapshots decode; retrieval keeps using facts/evidence/chunks.
+    var dossier: String? = nil
 
     var id: BrainNodeID { nodeID }
     var title: String { nodeID.title }
@@ -212,7 +244,10 @@ struct NodeBrainSlice: Codable, Hashable, Identifiable {
         if !summary.isEmpty { lines.append("Summary: \(summary)") }
         if !facts.isEmpty { lines.append("Facts: \(facts.joined(separator: " | "))") }
         if !evidence.isEmpty { lines.append("Evidence: \(evidence.joined(separator: " | "))") }
-        if !chunks.isEmpty {
+        if let dossier, !dossier.isEmpty {
+            lines.append("Evidence dossier:")
+            lines.append(dossier)
+        } else if !chunks.isEmpty {
             lines.append("Memory chunks:")
             lines.append(contentsOf: chunks.map { "- \($0)" })
         }
@@ -324,8 +359,24 @@ struct BrainAnswer: Codable, Hashable {
     let answer: String
     let evidence: [String]
     let confidence: Double
-    let recommendation: BrainMusicRecommendation?
+    /// The surfaced pick after novelty + catalog checks.
+    var recommendation: BrainMusicRecommendation?
+    /// Ranked candidates from the model, best first. The brain walks this list
+    /// through local novelty and catalog verification before surfacing one.
+    var recommendations: [BrainMusicRecommendation]? = nil
     var retrieval: BrainRetrievedContext? = nil
+
+    /// All candidates worth checking, in rank order.
+    var rankedCandidates: [BrainMusicRecommendation] {
+        if let recommendations, !recommendations.isEmpty { return recommendations }
+        return recommendation.map { [$0] } ?? []
+    }
+
+    func choosing(_ pick: BrainMusicRecommendation?) -> BrainAnswer {
+        var copy = self
+        copy.recommendation = pick
+        return copy
+    }
 
     func withNoveltyStatus(_ status: String) -> BrainAnswer {
         guard var recommendation else { return self }

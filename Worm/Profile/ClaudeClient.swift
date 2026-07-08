@@ -12,6 +12,15 @@ struct ClaudeClient {
     var baseURL: URL
     var model = "claude-opus-4-8"
 
+    /// High-effort synthesis calls routinely think past URLSession's default
+    /// 60-second request timeout; give the brain room to finish.
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 300
+        configuration.timeoutIntervalForResource = 600
+        return URLSession(configuration: configuration)
+    }()
+
     enum ClaudeError: LocalizedError {
         case missingKey
         case http(status: Int, body: String)
@@ -55,8 +64,8 @@ struct ClaudeClient {
     /// Adaptive thinking is on: without it, a constrained structured-output task
     /// with a heavy instruction set tends to loop and produce degenerate output.
     /// `maxTokens` must leave room for thinking *and* the answer.
-    func structuredCompletion(system: String, user: String, schema: [String: Any], effort: String = "high", maxTokens: Int = 8192) async throws -> String {
-        try await send(system: system, content: user, schema: schema, effort: effort, maxTokens: maxTokens)
+    func structuredCompletion(system: String, user: String, schema: [String: Any], effort: String = "high", maxTokens: Int = 8192, speed: String? = nil) async throws -> String {
+        try await send(system: system, content: user, schema: schema, effort: effort, maxTokens: maxTokens, speed: speed)
     }
 
     /// Same as `structuredCompletion`, but the user turn carries an image (as a
@@ -72,38 +81,91 @@ struct ClaudeClient {
 
     /// Shared request path. `content` is whatever the Messages API accepts for a
     /// user turn's `content`: a plain string, or an array of content blocks.
-    private func send(system: String, content: Any, schema: [String: Any], effort: String, maxTokens: Int) async throws -> String {
+    private func send(system: String, content: Any, schema: [String: Any], effort: String, maxTokens: Int, speed: String? = nil) async throws -> String {
         guard apiKey != nil || !requiresDirectAnthropicKey else { throw ClaudeError.missingKey }
 
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": maxTokens,
-            "thinking": ["type": "adaptive"],
-            "system": system,
-            "messages": [["role": "user", "content": content]],
-            "output_config": ["format": ["type": "json_schema", "schema": schema], "effort": effort],
-        ]
+        func makeRequest(fast: Bool) throws -> URLRequest {
+            var body: [String: Any] = [
+                "model": model,
+                "max_tokens": maxTokens,
+                "thinking": ["type": "adaptive"],
+                "system": system,
+                "messages": [["role": "user", "content": content]],
+                "output_config": ["format": ["type": "json_schema", "schema": schema], "effort": effort],
+            ]
+            if fast, let speed { body["speed"] = speed }
 
-        var request = URLRequest(url: baseURL.appending(path: "v1/messages"))
-        request.httpMethod = "POST"
-        if let apiKey {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            var request = URLRequest(url: baseURL.appending(path: "v1/messages"))
+            request.httpMethod = "POST"
+            if let apiKey {
+                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            }
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            if fast, speed != nil {
+                request.setValue("fast-mode-2026-02-01", forHTTPHeaderField: "anthropic-beta")
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
         }
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw ClaudeError.malformedResponse }
-        guard http.statusCode == 200 else {
-            throw ClaudeError.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
-        }
+        // 429 (rate limit), 529 (overloaded), and 5xx are transient; one blip
+        // must not kill a whole synthesis. Retry with exponential backoff,
+        // honoring retry-after when the server sends one. Fast mode has its own
+        // rate-limit pool (and its own failure modes), so retries after a fast
+        // attempt fall back to standard speed.
+        let maxAttempts = 6
+        var lastError: Error = ClaudeError.malformedResponse
+        for attempt in 0..<maxAttempts {
+            if attempt > 0 {
+                let delay = min(pow(2.0, Double(attempt - 1)) * 1.5, 20) + Double.random(in: 0...1.0)
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            let request = try makeRequest(fast: attempt == 0)
+            do {
+                let (data, response) = try await Self.session.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw ClaudeError.malformedResponse }
+                guard http.statusCode == 200 else {
+                    let error = ClaudeError.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
+                    // A failed fast-mode attempt (unsupported proxy, fast-pool
+                    // limit) always gets one standard-speed retry.
+                    if attempt == 0, speed != nil {
+                        lastError = error
+                        continue
+                    }
+                    if Self.isRetryable(status: http.statusCode) {
+                        lastError = error
+                        if let after = http.value(forHTTPHeaderField: "retry-after").flatMap(Double.init), after <= 30 {
+                            try await Task.sleep(nanoseconds: UInt64(after * 1_000_000_000))
+                        }
+                        continue
+                    }
+                    throw error
+                }
 
-        let decoded = try JSONDecoder().decode(MessagesResponse.self, from: data)
-        guard let text = decoded.content.first(where: { $0.type == "text" })?.text, !text.isEmpty else {
-            throw ClaudeError.malformedResponse
+                let decoded = try JSONDecoder().decode(MessagesResponse.self, from: data)
+                guard let text = decoded.content.first(where: { $0.type == "text" })?.text, !text.isEmpty else {
+                    throw ClaudeError.malformedResponse
+                }
+                return text
+            } catch let error as URLError where Self.isRetryable(urlError: error) {
+                lastError = error
+            }
         }
-        return text
+        throw lastError
+    }
+
+    private static func isRetryable(status: Int) -> Bool {
+        status == 429 || status == 529 || (500...599).contains(status)
+    }
+
+    private static func isRetryable(urlError: URLError) -> Bool {
+        switch urlError.code {
+        case .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     private struct MessagesResponse: Decodable {
