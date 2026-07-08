@@ -9,6 +9,7 @@ struct ProfileView: View {
     @Environment(ContactsNode.self) private var contacts
     @Environment(PhotosNode.self) private var photos
     @Environment(CalendarNode.self) private var calendar
+    @Environment(SelfieNode.self) private var selfie
     @Environment(TasteProfile.self) private var profile
 
     var body: some View {
@@ -180,6 +181,22 @@ struct ProfileView: View {
                 },
                 refresh: { await calendar.syncEverything() }
             )
+
+            nodeRow(
+                title: "Selfie",
+                symbol: "face.smiling",
+                route: .selfie,
+                isAuthorized: selfie.isAuthorized,
+                isBusy: selfie.isSyncing,
+                isPopulated: selfieIsPopulated,
+                status: selfie.statusSummary,
+                detail: selfieDetail,
+                lastSyncedAt: selfie.lastSyncedAt,
+                connectOrPopulate: {
+                    await selfie.syncEverything()
+                },
+                refresh: { await selfie.syncEverything() }
+            )
         }
     }
 
@@ -279,9 +296,13 @@ struct ProfileView: View {
     // MARK: - Derived State
 
     private var populatedNodeCount: Int {
-        [spotifyIsPopulated, appleMusicIsPopulated, youtubeIsPopulated, contactsIsPopulated, photosIsPopulated, calendarIsPopulated]
+        [spotifyIsPopulated, appleMusicIsPopulated, youtubeIsPopulated, contactsIsPopulated, photosIsPopulated, calendarIsPopulated, selfieIsPopulated]
             .filter { $0 }
             .count
+    }
+
+    private var selfieIsPopulated: Bool {
+        selfie.analysis != nil
     }
 
     private var brainStatus: String {
@@ -367,6 +388,10 @@ struct ProfileView: View {
         "\(calendar.events.count) events, \(calendar.reminders.count) reminders"
     }
 
+    private var selfieDetail: String {
+        selfie.analysis != nil ? "face read ready" : selfie.hasSelfie ? "selfie saved" : "no selfie"
+    }
+
     private func refreshBrainSlices() {
         let context = BrainSliceBuilder.context(
             spotify: spotify,
@@ -375,6 +400,7 @@ struct ProfileView: View {
             contacts: contacts,
             photos: photos,
             calendar: calendar,
+            selfie: selfie,
             read: profile.read,
             insights: profile.insights
         )
@@ -392,5 +418,6 @@ struct ProfileView: View {
     .environment(ContactsNode())
     .environment(PhotosNode())
     .environment(CalendarNode())
+    .environment(SelfieNode())
     .environment(TasteProfile())
 }

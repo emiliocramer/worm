@@ -9,6 +9,7 @@ enum BrainSliceBuilder {
         contacts: ContactsNode? = nil,
         photos: PhotosNode? = nil,
         calendar: CalendarNode? = nil,
+        selfie: SelfieNode? = nil,
         read: String?,
         insights: [Insight]
     ) -> BrainContext {
@@ -43,11 +44,20 @@ enum BrainSliceBuilder {
         } else {
             slices.append(emptySlice(.calendar))
         }
+        if let selfie {
+            slices.append(selfieSlice(selfie))
+        } else {
+            slices.append(emptySlice(.selfie))
+        }
         return BrainContext(slices: slices, read: read, insights: insights)
     }
 
     static func spotifySlice(from node: SpotifyMusicNode) -> NodeBrainSlice {
         spotifySlice(node)
+    }
+
+    static func selfieSlice(from node: SelfieNode) -> NodeBrainSlice {
+        selfieSlice(node)
     }
 
     // MARK: - Slices
@@ -486,6 +496,37 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.68 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
+            novelty: BrainNoveltySet()
+        )
+    }
+
+    private static func selfieSlice(_ node: SelfieNode) -> NodeBrainSlice {
+        let analysis = node.analysis
+        let populated = analysis != nil
+
+        var facts: [String] = ["selfie captured: \(node.hasSelfie ? "yes" : "no")"]
+        if let analysis {
+            facts.append("read confidence: \(String(format: "%.2f", analysis.confidence))")
+        }
+
+        let chunks = [
+            analysis.map { "Face read: \($0.read)" },
+            analysis.map { "Standout observation: \($0.oneLiner)" },
+            chunk("Observed in selfie", analysis?.observations ?? []),
+            chunk("Aesthetic signals", analysis?.aesthetics ?? []),
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+
+        return NodeBrainSlice(
+            nodeID: .selfie,
+            isConnected: node.hasSelfie,
+            isPopulated: populated,
+            summary: analysis?.read ?? "",
+            facts: facts,
+            evidence: chunks,
+            chunks: chunks,
+            freshness: node.lastAnalyzedAt,
+            confidence: analysis?.confidence ?? 0,
+            health: node.isAnalyzing ? "reading" : populated ? "ready" : node.hasSelfie ? "captured, not read" : "not connected",
             novelty: BrainNoveltySet()
         )
     }

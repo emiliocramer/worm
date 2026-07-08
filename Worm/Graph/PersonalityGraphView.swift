@@ -11,6 +11,7 @@ enum NodeRoute: Hashable {
     case contacts
     case photos
     case calendar
+    case selfie
 }
 
 /// A node as drawn in the graph.
@@ -32,6 +33,7 @@ struct PersonalityGraphView: View {
     @Environment(ContactsNode.self) private var contacts
     @Environment(PhotosNode.self) private var photos
     @Environment(CalendarNode.self) private var calendar
+    @Environment(SelfieNode.self) private var selfie
     @Environment(\.dismiss) private var dismiss
 
     private let centerDotSize: CGFloat = 108
@@ -128,6 +130,11 @@ struct PersonalityGraphView: View {
                 title: "Calendar",
                 isConnected: calendar.isAuthorized
             ),
+            GraphNode(
+                id: .selfie,
+                title: "Selfie",
+                isConnected: selfie.isAuthorized
+            ),
         ]
     }
 
@@ -203,4 +210,5 @@ struct PersonalityGraphView: View {
     .environment(ContactsNode())
     .environment(PhotosNode())
     .environment(CalendarNode())
+    .environment(SelfieNode())
 }

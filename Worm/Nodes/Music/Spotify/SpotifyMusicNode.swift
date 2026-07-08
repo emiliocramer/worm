@@ -344,12 +344,14 @@ final class SpotifyMusicNode {
     private static let maxPlaylists = 500
     private static let maxPlaylistTracksTotal = 50_000
     private static let topItemsPerRange = 50
+    private static let onboardingPlaylistPreviewLimit = 50
 
     // MARK: Observable state
 
     private(set) var isConfigured = false
     private(set) var isAuthorized = false
     private(set) var isAuthorizing = false
+    private(set) var authorizationVersion = 0
     private(set) var isSyncing = false
     private(set) var grantedScopes: [String] = []
     private(set) var syncProgress: String?
@@ -512,6 +514,17 @@ final class SpotifyMusicNode {
     }
 
     func connect() async {
+        await connect(allowStoredSessionReuse: true, syncAfterAuthorization: true)
+    }
+
+    /// Onboarding is a consent moment, not a restore moment. Force a real OAuth
+    /// pass so stale keychain tokens or thin cached snapshots cannot satisfy the
+    /// first-time experience.
+    func connectForOnboarding() async {
+        await connect(allowStoredSessionReuse: false, syncAfterAuthorization: false)
+    }
+
+    private func connect(allowStoredSessionReuse: Bool, syncAfterAuthorization: Bool) async {
         lastErrorMessage = nil
         guard isConfigured else {
             lastErrorMessage = configurationMessage ?? "Spotify is not configured."
@@ -522,12 +535,16 @@ final class SpotifyMusicNode {
         // Re-running OAuth on every connect hammers Spotify's authorize endpoint
         // and gets the client throttled (it answers with a generic server_error).
         // Connect once, set up forever: only authorize fresh when we have nothing.
-        if isAuthorized || loadStoredTokensIfAvailable() {
+        if allowStoredSessionReuse, isAuthorized || loadStoredTokensIfAvailable() {
             isAuthorized = true
-            if !hasRestoredSnapshot {
+            if syncAfterAuthorization, !hasRestoredSnapshot {
                 await syncEverything()
             }
             return
+        }
+
+        if !allowStoredSessionReuse {
+            clearStoredSessionBeforeFreshAuthorization()
         }
 
         do {
@@ -539,8 +556,11 @@ final class SpotifyMusicNode {
             tokens = newTokens
             grantedScopes = newTokens.scopes.sorted()
             isAuthorized = true
+            authorizationVersion += 1
             isAuthorizing = false
-            await syncEverything()
+            if syncAfterAuthorization {
+                await syncEverything()
+            }
         } catch {
             isAuthorizing = false
             if (error as NSError).domain == ASWebAuthenticationSessionError.errorDomain,
@@ -573,6 +593,26 @@ final class SpotifyMusicNode {
             !playlists.isEmpty
     }
 
+    private func clearStoredSessionBeforeFreshAuthorization() {
+        syncTask?.cancel()
+        syncTask = nil
+        authSession?.cancel()
+        authSession = nil
+        do {
+            try tokenStore.delete()
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+        tokens = nil
+        grantedScopes = []
+        isAuthorized = false
+        isAuthorizing = false
+        isSyncing = false
+        syncProgress = nil
+        clearSnapshotState()
+        snapshotStore.delete()
+    }
+
     func disconnect() {
         syncTask?.cancel()
         syncTask = nil
@@ -587,6 +627,11 @@ final class SpotifyMusicNode {
         isAuthorizing = false
         isSyncing = false
         syncProgress = nil
+        clearSnapshotState()
+        snapshotStore.delete()
+    }
+
+    private func clearSnapshotState() {
         profile = nil
         currentlyPlaying = nil
         playbackState = nil
@@ -611,7 +656,6 @@ final class SpotifyMusicNode {
         playlists = []
         playlistItemsByID = [:]
         lastSyncedAt = nil
-        snapshotStore.delete()
     }
 
     /// Re-pull everything. Coalesces concurrent callers onto a single task.
@@ -651,6 +695,30 @@ final class SpotifyMusicNode {
         await task.value
     }
 
+    /// Fast path for the first onboarding reveal. It fills the same in-memory
+    /// Spotify fields used by `BrainSliceBuilder.spotifySlice`, but avoids the
+    /// long tail of saved shows, saved episodes, and playlist-track hydration.
+    func syncOnboardingTastePreview() async {
+        guard isAuthorized else { return }
+
+        do {
+            try await runOnboardingTastePreview()
+        } catch SpotifyAPIError.unauthorized {
+            do {
+                _ = try await refreshTokens()
+                try await runOnboardingTastePreview()
+            } catch is CancellationError {
+                // User cancelled or disconnected mid-preview.
+            } catch {
+                lastErrorMessage = error.localizedDescription
+            }
+        } catch is CancellationError {
+            // User cancelled or disconnected mid-preview.
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
     func verifyCatalogRecommendation(_ recommendation: BrainMusicRecommendation) async -> BrainCatalogVerification {
         guard isConfigured else {
             return .unavailable("Spotify", message: "Spotify is not configured for catalog verification.")
@@ -678,6 +746,48 @@ final class SpotifyMusicNode {
     }
 
     // MARK: - Full sync
+
+    private func runOnboardingTastePreview() async throws {
+        let token = try await validAccessToken()
+        lastErrorMessage = nil
+        report("Reading Spotify taste…")
+
+        let scopes = Set(grantedScopes)
+        let previewProfile = try await api.fetchCurrentUser(accessToken: token)
+
+        var previewTopTracksShort: [SpotifyTrack] = []
+        var previewTopTracksMedium: [SpotifyTrack] = []
+        var previewTopTracksLong: [SpotifyTrack] = []
+        var previewTopArtistsShort: [SpotifyArtist] = []
+        var previewTopArtistsMedium: [SpotifyArtist] = []
+        var previewTopArtistsLong: [SpotifyArtist] = []
+
+        if scopes.contains("user-top-read") {
+            previewTopArtistsShort = (try? await allTopArtists(token: token, range: "short_term")) ?? []
+            previewTopTracksShort = (try? await allTopTracks(token: token, range: "short_term")) ?? []
+            previewTopArtistsMedium = (try? await allTopArtists(token: token, range: "medium_term")) ?? []
+            previewTopTracksMedium = (try? await allTopTracks(token: token, range: "medium_term")) ?? []
+            previewTopArtistsLong = (try? await allTopArtists(token: token, range: "long_term")) ?? []
+            previewTopTracksLong = (try? await allTopTracks(token: token, range: "long_term")) ?? []
+        }
+
+        let previewPlaylists: [SpotifyPlaylist] = (try? await allPages(max: Self.onboardingPlaylistPreviewLimit) { offset in
+            let page = try await api.fetchPlaylists(accessToken: token, limit: Self.pageSize, offset: offset)
+            return (page.items, page.next, page.total)
+        }) ?? []
+
+        profile = previewProfile
+        topTracksShort = previewTopTracksShort
+        topTracksMedium = previewTopTracksMedium
+        topTracksLong = previewTopTracksLong
+        topArtistsShort = previewTopArtistsShort
+        topArtistsMedium = previewTopArtistsMedium
+        topArtistsLong = previewTopArtistsLong
+        playlists = previewPlaylists
+        lastSyncedAt = Date()
+        saveCachedSnapshot()
+        report(nil)
+    }
 
     private func runFullSync() async throws {
         let token = try await validAccessToken()

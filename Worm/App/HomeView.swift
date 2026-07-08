@@ -66,5 +66,6 @@ struct HomeView: View {
     .environment(ContactsNode())
     .environment(PhotosNode())
     .environment(CalendarNode())
+    .environment(SelfieNode())
     .environment(TasteProfile())
 }

@@ -41,6 +41,8 @@
 	<true/>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Worm reads your Apple Music library, listening history, and recommendations to build your music personality node.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Worm uses your camera for the selfie you snap him — the first thing he learns about you is your face.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Worm reads your calendar events, attendees, locations, recurrence rules, alarms, and notes to build your calendar personality node.</string>
 	<key>NSContactsUsageDescription</key>

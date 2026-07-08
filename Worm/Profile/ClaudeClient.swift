@@ -56,6 +56,23 @@ struct ClaudeClient {
     /// with a heavy instruction set tends to loop and produce degenerate output.
     /// `maxTokens` must leave room for thinking *and* the answer.
     func structuredCompletion(system: String, user: String, schema: [String: Any], effort: String = "high", maxTokens: Int = 8192) async throws -> String {
+        try await send(system: system, content: user, schema: schema, effort: effort, maxTokens: maxTokens)
+    }
+
+    /// Same as `structuredCompletion`, but the user turn carries an image (as a
+    /// base64 block) alongside the text prompt — for reading a photo/selfie into
+    /// structured JSON. Kept behind the brain layer like every other model call.
+    func structuredVisionCompletion(system: String, user: String, imageData: Data, mediaType: String = "image/jpeg", schema: [String: Any], effort: String = "high", maxTokens: Int = 8192) async throws -> String {
+        let content: [[String: Any]] = [
+            ["type": "image", "source": ["type": "base64", "media_type": mediaType, "data": imageData.base64EncodedString()]],
+            ["type": "text", "text": user],
+        ]
+        return try await send(system: system, content: content, schema: schema, effort: effort, maxTokens: maxTokens)
+    }
+
+    /// Shared request path. `content` is whatever the Messages API accepts for a
+    /// user turn's `content`: a plain string, or an array of content blocks.
+    private func send(system: String, content: Any, schema: [String: Any], effort: String, maxTokens: Int) async throws -> String {
         guard apiKey != nil || !requiresDirectAnthropicKey else { throw ClaudeError.missingKey }
 
         let body: [String: Any] = [
@@ -63,7 +80,7 @@ struct ClaudeClient {
             "max_tokens": maxTokens,
             "thinking": ["type": "adaptive"],
             "system": system,
-            "messages": [["role": "user", "content": user]],
+            "messages": [["role": "user", "content": content]],
             "output_config": ["format": ["type": "json_schema", "schema": schema], "effort": effort],
         ]
 

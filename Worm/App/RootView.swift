@@ -36,6 +36,8 @@ struct RootView: View {
                             PhotosNodeView()
                         case .calendar:
                             CalendarNodeView()
+                        case .selfie:
+                            SelfieNodeView()
                         }
                     }
             }
@@ -57,5 +59,6 @@ struct RootView: View {
         .environment(ContactsNode())
         .environment(PhotosNode())
         .environment(CalendarNode())
+        .environment(SelfieNode())
         .environment(TasteProfile())
 }
