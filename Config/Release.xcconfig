@@ -1,2 +1,6 @@
 #include "AppConfig.xcconfig"
 #include? "Production.xcconfig"
+
+// Optional local override for Release archives/TestFlight. This file is ignored.
+// Use it only when you intentionally want local secrets compiled into Release.
+#include? "ReleaseSecrets.xcconfig"

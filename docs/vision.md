@@ -230,6 +230,19 @@ V1 retrieves memories and lets the model propose. V2 flips that:
    invent songs.
 5. Log why the chosen song won and why the nearest rejects lost.
 
+### Secondary effect nodes
+
+The discovery engine needs derived rabbit-hole structures between raw node data
+and candidate songs. A connected node tells us what the user touched; a
+secondary effect node tells us what that touch points toward: producer credits,
+side projects, labels, scenes, sample sources, live versions, places, routines,
+trusted people, visual aesthetics, and other downstream trails.
+
+See `docs/secondary-effect-nodes.md` for scope, tradeoffs, and the implemented
+Revision A/B path: typed seeds on every slice, hero journeys as evidence-gated
+code (`Worm/Profile/Digging/`), catalog-verified candidate pools, delegated
+digging rounds, spend tracking, and route-aware final ranking.
+
 ## 7. Insight catalog — instant wins from one node (Spotify)
 
 These are *sketches* to prove the bar, all derivable from data the Spotify node

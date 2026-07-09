@@ -35,6 +35,11 @@ are important evidence, but YouTube, Contacts, Photos, Calendar, and future
 culture/media nodes must be able to change the pick. A recommendation has to be
 new, real, catalog verified, and explainable from the whole taste profile.
 
+`docs/secondary-effect-nodes.md` sketches the next discovery layer: derived
+rabbit-hole trails from raw node data into producers, collaborators, labels,
+scenes, places, routines, and other downstream paths Worm can dig before
+choosing a song.
+
 The first debug query lives at **Profile → Chat**. Asking
 `recommend me a new song` retrieves music memories from the combined brain
 context and then rejects any known track, artist, or album found in

@@ -31,6 +31,14 @@ struct OnboardingView: View {
     /// Beat-by-beat reveals on the "now the music" (Spotify) step.
     @State private var spotifyAskRevealed = false
     @State private var spotifyButtonVisible = false
+    /// The worm's learned size across the onboarding asks.
+    @State private var wormSize = OnboardingWormSize.seed
+    /// Music-success swallow state. This keeps the OAuth success connected to
+    /// the same growth language as the selfie.
+    @State private var spotifyContentHidden = false
+    @State private var musicMorselVisible = false
+    @State private var musicMorselFed = false
+    @State private var musicGulpStart: Double?
 
     private enum Phase { case hello, intro, selfie, spotify, working, failed }
 
@@ -56,6 +64,8 @@ struct OnboardingView: View {
                     // background so it's ready by the time the profile synthesizes,
                     // then move on to the Spotify ask.
                     Task { await selfie.ingestCapturedSelfie() }
+                    wormSize = .afterSelfie
+                    resetSpotifyAsk()
                     phase = .spotify
                 })
             case .spotify: spotifyIntroView
@@ -224,6 +234,16 @@ struct OnboardingView: View {
         }
     }
 
+    private func resetSpotifyAsk() {
+        spotifyAskRevealed = false
+        spotifyButtonVisible = false
+        spotifyContentHidden = false
+        musicMorselVisible = false
+        musicMorselFed = false
+        musicGulpStart = nil
+        isConnecting = false
+    }
+
     // MARK: - Intro (the first ask: a selfie)
 
     private var introView: some View {
@@ -233,15 +253,13 @@ struct OnboardingView: View {
             ZStack {
                 // The same little guy from the hello screen, back to a resting dot
                 // low on the screen — a familiar face to greet the first ask.
-                GrowingWorm(
-                    growthStart: nil,
-                    screen: geo.size,
+                SnackingWorm(
                     restCenter: CGPoint(x: W / 2, y: H * 0.72),
-                    dotLength: dotLength,
-                    dotThickness: dotThickness,
+                    gulpStart: nil,
+                    fromSize: wormSize,
+                    toSize: wormSize,
                     color: ink,
-                    eyeColor: paper,
-                    worm: dotWorm
+                    eyeColor: paper
                 )
                 .allowsHitTesting(false)
 
@@ -312,61 +330,73 @@ struct OnboardingView: View {
     private var spotifyIntroView: some View {
         GeometryReader { geo in
             let W = geo.size.width, H = geo.size.height
+            let wormCenter = CGPoint(x: W / 2, y: H * 0.72)
+            let morselStart = CGPoint(x: W / 2, y: H * 0.54)
 
             ZStack {
-                GrowingWorm(
-                    growthStart: nil,
-                    screen: geo.size,
-                    restCenter: CGPoint(x: W / 2, y: H * 0.72),
-                    dotLength: dotLength,
-                    dotThickness: dotThickness,
+                SnackingWorm(
+                    restCenter: wormCenter,
+                    gulpStart: musicGulpStart,
+                    fromSize: .afterSelfie,
+                    toSize: .afterMusic,
                     color: ink,
-                    eyeColor: paper,
-                    worm: dotWorm
+                    eyeColor: paper
                 )
                 .allowsHitTesting(false)
 
-                VStack(spacing: 0) {
-                    Spacer().frame(height: H * 0.22)
+                if musicMorselVisible {
+                    MusicConnectionMorsel(ink: ink, paper: paper)
+                        .scaleEffect(musicMorselFed ? 0.08 : 1)
+                        .rotationEffect(.degrees(musicMorselFed ? 20 : -8))
+                        .position(musicMorselFed ? wormCenter : morselStart)
+                        .opacity(musicGulpStart == nil ? 1 : 0)
+                        .transition(.scale(scale: 0.35).combined(with: .opacity))
+                }
 
-                    ZStack {
-                        if spotifyAskRevealed {
-                            VStack(spacing: 10) {
-                                Text("the music")
+                if !spotifyContentHidden {
+                    VStack(spacing: 0) {
+                        Spacer().frame(height: H * 0.22)
+
+                        ZStack {
+                            if spotifyAskRevealed {
+                                VStack(spacing: 10) {
+                                    Text("the music")
+                                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(ink.opacity(0.88))
+                                    Text("connect Spotify so I can know what you like.")
+                                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                                        .foregroundStyle(ink.opacity(0.5))
+                                }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                            } else {
+                                Text("good. now the fun part.")
                                     .font(.system(size: 26, weight: .semibold, design: .rounded))
                                     .foregroundStyle(ink.opacity(0.88))
-                                Text("connect Spotify so I can know what you like.")
-                                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                                    .foregroundStyle(ink.opacity(0.5))
+                                    .transition(.opacity)
                             }
+                        }
+
+                        Spacer()
+
+                        if spotifyButtonVisible {
+                            Button(action: startWorking) {
+                                Text(isConnecting ? "connecting…" : "connect Spotify")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(paper)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 16)
+                                    .background(ink, in: Capsule())
+                            }
+                            .disabled(isConnecting)
+                            .padding(.horizontal, 32)
+                            .padding(.bottom, 24)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
-                        } else {
-                            Text("good. now the fun part.")
-                                .font(.system(size: 26, weight: .semibold, design: .rounded))
-                                .foregroundStyle(ink.opacity(0.88))
-                                .transition(.opacity)
                         }
                     }
-
-                    Spacer()
-
-                    if spotifyButtonVisible {
-                        Button(action: startWorking) {
-                            Text(isConnecting ? "connecting…" : "connect Spotify")
-                                .font(.system(size: 17, weight: .semibold))
-                                .foregroundStyle(paper)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(ink, in: Capsule())
-                        }
-                        .disabled(isConnecting)
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 24)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 36)
+                    .transition(.opacity)
                 }
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 36)
             }
             .task { await scheduleSpotifyBeats() }
         }
@@ -375,13 +405,13 @@ struct OnboardingView: View {
     /// The connect ask replaces the title, the button a beat after that — matched
     /// to the selfie step's cadence so it reads as the next step in one flow.
     private func scheduleSpotifyBeats() async {
-        guard !spotifyAskRevealed else { return }
+        guard !spotifyAskRevealed, !spotifyContentHidden else { return }
         try? await Task.sleep(for: .seconds(2.1))
-        guard phase == .spotify else { return }
+        guard phase == .spotify, !spotifyContentHidden else { return }
         Haptics.impact(.light, intensity: 0.5)
         withAnimation(.spring(response: 0.55, dampingFraction: 0.8)) { spotifyAskRevealed = true }
         try? await Task.sleep(for: .seconds(1.7))
-        guard phase == .spotify else { return }
+        guard phase == .spotify, !spotifyContentHidden else { return }
         withAnimation(.easeIn(duration: 0.4)) { spotifyButtonVisible = true }
     }
 
@@ -399,7 +429,7 @@ struct OnboardingView: View {
                         FirstInsightReveal(insight: insight, ink: ink)
                             .transition(.scale(scale: 0.96).combined(with: .opacity))
                     } else {
-                        TasteScanLoader(ink: ink, paper: paper)
+                        TasteScanLoader(ink: ink, paper: paper, wormSize: wormSize)
                             .transition(.opacity)
                     }
                 }
@@ -447,7 +477,7 @@ struct OnboardingView: View {
     private var failedView: some View {
         VStack(spacing: 22) {
             Spacer()
-            InchwormLoader(color: ink.opacity(0.8), eyeColor: paper)
+            OnboardingWormGlyph(size: wormSize, color: ink.opacity(0.8), eyeColor: paper)
                 .frame(width: 120, height: 70)
             Text(spotify.lastErrorMessage ?? "Couldn't connect to Spotify.")
                 .font(.system(size: 17))
@@ -504,8 +534,41 @@ struct OnboardingView: View {
             try? await Task.sleep(for: .seconds(0.15))
         }
 
-        // Permissions granted, the web view is gone — now reveal the worm working.
+        // Permissions granted, the web view is gone — now the music connection
+        // becomes food, grows the worm, and only then reveals him working.
         isConnecting = false
+        await absorbMusicThenProceed()
+    }
+
+    private func absorbMusicThenProceed() async {
+        withAnimation(.easeOut(duration: 0.25)) {
+            spotifyContentHidden = true
+            spotifyButtonVisible = false
+        }
+
+        try? await Task.sleep(for: .seconds(0.18))
+        Haptics.impact(.light, intensity: 0.55)
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+            musicMorselVisible = true
+        }
+
+        try? await Task.sleep(for: .seconds(0.5))
+        Haptics.impact(.medium)
+        withAnimation(.easeIn(duration: 0.72)) {
+            musicMorselFed = true
+        }
+
+        try? await Task.sleep(for: .seconds(0.72))
+        musicGulpStart = Date().timeIntervalSinceReferenceDate
+        wormSize = .afterMusic
+        Haptics.impact(.heavy)
+
+        try? await Task.sleep(for: .seconds(1.0))
+        withAnimation(.easeOut(duration: 0.24)) {
+            musicMorselVisible = false
+        }
+
+        try? await Task.sleep(for: .seconds(0.35))
         revealed = []
         revealedIDs = []
         canContinue = false
@@ -765,6 +828,7 @@ private struct TasteRevealBackdrop: View {
 private struct TasteScanLoader: View {
     let ink: Color
     let paper: Color
+    let wormSize: OnboardingWormSize
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -773,8 +837,8 @@ private struct TasteScanLoader: View {
                 ZStack {
                     BurrowPulse(color: ink, time: t)
                         .frame(width: 220, height: 116)
-                    InchwormLoader(color: ink.opacity(0.9), eyeColor: paper, thicknessRatio: 0.12)
-                        .frame(width: 168, height: 86)
+                    OnboardingWormGlyph(size: wormSize, color: ink.opacity(0.9), eyeColor: paper)
+                        .frame(width: max(168, wormSize.length + 52), height: 86)
                         .offset(y: -4)
                 }
 
@@ -784,6 +848,26 @@ private struct TasteScanLoader: View {
             }
             .padding(.bottom, 36)
         }
+    }
+}
+
+private struct MusicConnectionMorsel: View {
+    let ink: Color
+    let paper: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(ink)
+                .frame(width: 54, height: 54)
+            Circle()
+                .stroke(paper.opacity(0.35), lineWidth: 1.5)
+                .frame(width: 42, height: 42)
+            Image(systemName: "music.note")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(paper)
+        }
+        .shadow(color: ink.opacity(0.18), radius: 12, y: 6)
     }
 }
 

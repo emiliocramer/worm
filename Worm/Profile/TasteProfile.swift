@@ -17,6 +17,9 @@ final class TasteProfile {
     private(set) var chatHistory: [BrainChatMessage] = []
     private(set) var isSynthesizing = false
     private(set) var isAnswering = false
+    /// Live pipeline trace while a question is being answered; persisted onto
+    /// the finished message as `BrainAnswer.trace`.
+    private(set) var liveTrace: [String] = []
     private(set) var lastError: String?
     private(set) var lastSynthesizedAt: Date?
     private(set) var lastAnsweredAt: Date?
@@ -28,6 +31,10 @@ final class TasteProfile {
 
     @ObservationIgnored private let store = SnapshotStore<Snapshot>(filename: "taste-profile.json")
     @ObservationIgnored private let synthesizer = BrainSynthesizer()
+    /// Winning journeys and graded leads carried across pulls, so every dig
+    /// starts from what previous expeditions proved.
+    @ObservationIgnored private let digMemoryStore = SnapshotStore<DigMemorySnapshot>(filename: "dig-memory.json")
+    @ObservationIgnored private var digMemory: DigMemorySnapshot?
 
     private struct Snapshot: Codable {
         let read: String?
@@ -65,6 +72,7 @@ final class TasteProfile {
     }
 
     init() {
+        digMemory = digMemoryStore.load()
         if let snapshot = store.load() {
             read = snapshot.read
             insights = snapshot.insights
@@ -135,14 +143,16 @@ final class TasteProfile {
         }
     }
 
-    /// Ask the brain a direct question. For music recommendations, returned
-    /// candidates are checked locally against the full novelty memory in slices;
-    /// if a candidate is too familiar or cannot be catalog-verified, the model
-    /// gets a retry with that rejection.
+    /// Ask the brain a direct question. Music recommendation pulls dig first:
+    /// seeds -> trails -> catalog searches -> a novelty-filtered pool of real
+    /// tracks the model ranks. Candidates are still walked through the local
+    /// novelty filter, and pool picks are verified by construction; anything
+    /// off-pool goes through catalog verification as before.
     @discardableResult
     func answer(
         _ text: String,
         context inputContext: BrainContext,
+        digger: BrainDigger? = nil,
         verifyRecommendation: ((BrainMusicRecommendation) async -> BrainCatalogVerification)? = nil
     ) async -> BrainAnswer? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -154,63 +164,156 @@ final class TasteProfile {
         save()
 
         isAnswering = true
+        liveTrace = []
         defer { isAnswering = false }
+
+        func trace(_ line: String) {
+            liveTrace.append(line)
+        }
+
+        let intent = BrainRetriever.classifyIntent(trimmed)
+        trace("Intent: \(intent.title).")
+
+        // One priced ledger per pull. Every model call — scouts, assayers,
+        // foreman, shortlist, judge — lands here and streams into the trace.
+        let ledger = SpendLedger()
+        ledger.onRecord = { record in
+            Task { @MainActor [weak self] in
+                self?.liveTrace.append("$ \(record.traceLine)")
+            }
+        }
+
+        var dig: DigResult?
+        if let digger, intent == .musicRecommendation {
+            trace("Digging before asking… (budget $\(String(format: "%.2f", digger.budgetUSD)))")
+            dig = await digger.dig(
+                context: context,
+                question: trimmed,
+                synthesizer: synthesizer,
+                memory: digMemory,
+                ledger: ledger
+            ) { line in
+                trace(line)
+            }
+        } else if intent == .musicRecommendation {
+            trace("No digger wired; propose-then-verify path.")
+        }
+
+        func finish(_ answer: BrainAnswer) -> BrainAnswer {
+            var finished = answer
+            finished.dig = dig
+            finished.spend = ledger.records
+            finished.trace = liveTrace
+            if finished.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // A blank line must never reach the transcript, whatever the
+                // model did under token pressure.
+                finished = BrainAnswer(
+                    answer: finished.recommendation == nil
+                        ? "I came back empty on that one. The dig detail below shows how far I got."
+                        : "Here is the one that survived the dig.",
+                    evidence: finished.evidence,
+                    confidence: finished.confidence,
+                    recommendation: finished.recommendation,
+                    recommendations: finished.recommendations,
+                    retrieval: finished.retrieval,
+                    dig: finished.dig,
+                    trace: finished.trace,
+                    spend: finished.spend
+                )
+            }
+            return finished
+        }
 
         var rejected: [String] = []
         do {
             // Each model call returns a ranked candidate list; walk it through the
             // local novelty filter and catalog verification and surface the first
             // survivor. A fresh model call happens only when the whole list dies.
-            for _ in 0..<2 {
+            for attempt in 0..<2 {
+                trace(attempt == 0 ? "Asking the brain (effort \(intent == .musicRecommendation ? "xhigh" : "high"))…" : "Whole list died; asking again with \(rejected.count) rejections…")
                 let query = BrainQuery(text: trimmed, rejectedRecommendations: rejected)
-                var result = try await synthesizer.answer(query, context: context)
+                var result = try await synthesizer.answer(query, context: context, dig: dig, ledger: ledger)
                 let candidates = result.rankedCandidates
+                trace("Model returned \(candidates.count) candidate\(candidates.count == 1 ? "" : "s").")
 
                 if candidates.isEmpty {
-                    result = result.choosing(nil)
+                    // Zero candidates against a non-empty verified pool is a model
+                    // failure (usually token pressure), not an answer. Retry once
+                    // with the failure named.
+                    if attempt == 0, dig?.hasPool == true {
+                        trace("Model returned nothing despite a \(dig?.pool.count ?? 0)-track verified pool; retrying.")
+                        rejected.append("(previous attempt returned zero recommendations; rank the verified candidate pool)")
+                        continue
+                    }
+                    result = finish(result.choosing(nil))
                     append(answer: result)
-                    InsightLog.recordQuery(query: query, context: context, result: result)
+                    InsightLog.recordQuery(query: query, context: context, result: result, dig: dig)
                     return result
                 }
 
                 for candidate in candidates {
                     if let issue = context.noveltyIssue(for: candidate) {
+                        trace("Novelty rejected \(candidate.title) by \(candidate.artist): \(issue).")
                         rejected.append("\(candidate.artist) - \(candidate.title): \(issue)")
                         continue
                     }
                     var chosen = result.choosing(candidate)
-                    if let verifyRecommendation {
+                    if let match = dig?.pool.first(where: { $0.trackKey == BrainNoveltySet.trackKey(title: candidate.title, artist: candidate.artist) }) {
+                        // The candidate came out of a real catalog response; it is
+                        // verified by construction and carries its dig provenance.
+                        trace("\(candidate.title) matched the dig pool; verified by construction (route: \(match.journey.title)).")
+                        chosen = chosen.withCatalogVerification(BrainCatalogVerification(
+                            isVerified: true,
+                            canVerify: true,
+                            source: match.source,
+                            message: "Verified by catalog dig (\(match.source) search result, route: \(match.journey.title)).",
+                            match: BrainCatalogCandidate(
+                                source: match.source,
+                                title: match.title,
+                                artist: match.artist,
+                                album: match.album,
+                                url: match.url
+                            ),
+                            candidates: []
+                        ))
+                    } else if let verifyRecommendation {
+                        trace("\(candidate.title) is off-pool; verifying against live catalog…")
                         let verification = await verifyRecommendation(candidate)
                         guard verification.isVerified else {
+                            trace("Catalog rejected \(candidate.title): \(verification.message)")
                             rejected.append("\(candidate.artist) - \(candidate.title): \(verification.message)")
                             continue
                         }
                         chosen = chosen.withCatalogVerification(verification)
                     }
-                    chosen = chosen.withNoveltyStatus("Passed local novelty filters.")
+                    trace("Surfacing \(candidate.title) by \(candidate.artist). Total spend \(ledger.summaryLine).")
+                    chosen = finish(chosen.withNoveltyStatus("Passed local novelty filters."))
+                    recordDigOutcome(dig: dig, pick: candidate)
                     append(answer: chosen)
-                    InsightLog.recordQuery(query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context, result: chosen)
+                    InsightLog.recordQuery(query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context, result: chosen, dig: dig)
                     return chosen
                 }
             }
 
-            let fallback = BrainAnswer(
+            trace("Both attempts exhausted; surfacing honest failure.")
+            let fallback = finish(BrainAnswer(
                 answer: "Everything I found was too familiar or failed catalog verification. I need a deeper catalog pass before I trust a pick.",
                 evidence: rejected,
                 confidence: 0.2,
                 recommendation: nil
-            )
+            ))
             append(answer: fallback)
-            InsightLog.recordQuery(query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context, result: fallback)
+            InsightLog.recordQuery(query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context, result: fallback, dig: dig)
             return fallback
         } catch {
             lastError = error.localizedDescription
-            let failure = BrainAnswer(
+            trace("Error: \(error.localizedDescription)")
+            let failure = finish(BrainAnswer(
                 answer: error.localizedDescription,
                 evidence: [],
                 confidence: 0,
                 recommendation: nil
-            )
+            ))
             append(answer: failure)
             InsightLog.recordQueryError(error, query: BrainQuery(text: trimmed, rejectedRecommendations: rejected), context: context)
             return nil
@@ -232,9 +335,32 @@ final class TasteProfile {
         lastAnsweredAt = nil
         lastError = nil
         store.delete()
+        digMemory = nil
+        digMemoryStore.delete()
     }
 
     // MARK: - Private
+
+    /// A surfaced pick teaches the dig memory: the winning journey ranks
+    /// higher next time, and this expedition's graded leads persist so the
+    /// next dig starts from proven ground instead of re-discovering it.
+    private func recordDigOutcome(dig: DigResult?, pick: BrainMusicRecommendation) {
+        guard let dig else { return }
+        var memory = digMemory ?? DigMemorySnapshot()
+        if let match = dig.pool.first(where: { $0.trackKey == BrainNoveltySet.trackKey(title: pick.title, artist: pick.artist) }) {
+            memory.journeyWins[match.journey.rawValue, default: 0] += 1
+        }
+        if let leads = dig.leads, !leads.isEmpty {
+            var byID = Dictionary(uniqueKeysWithValues: memory.leads.map { ($0.id, $0) })
+            for lead in leads where byID[lead.id] == nil {
+                byID[lead.id] = lead
+            }
+            memory.leads = Array(byID.values.sorted { $0.score > $1.score }.prefix(40))
+        }
+        memory.updatedAt = Date()
+        digMemory = memory
+        digMemoryStore.save(memory)
+    }
 
     private func append(answer: BrainAnswer) {
         chatHistory.append(BrainChatMessage(role: .brain, text: answer.answer, answer: answer))

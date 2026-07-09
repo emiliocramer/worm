@@ -61,6 +61,7 @@ fastlane/test_output
 !.env.example
 Secrets.xcconfig
 **/Secrets.xcconfig
+**/ReleaseSecrets.xcconfig
 **/Production.xcconfig
 secrets.plist
 GoogleService-Info.plist

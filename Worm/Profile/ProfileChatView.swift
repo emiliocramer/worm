@@ -33,11 +33,23 @@ struct ProfileChatView: View {
             }
 
             if profile.isAnswering {
-                Section {
+                Section("Thinking") {
                     HStack(spacing: 10) {
                         ProgressView()
-                        Text("Reading the brain")
+                        Text(profile.liveTrace.last ?? "Reading the brain")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    if profile.liveTrace.count > 1 {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(profile.liveTrace.suffix(8).enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
                     }
                 }
             }
@@ -122,6 +134,14 @@ struct ProfileChatView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let answer = message.answer, answer.dig != nil || answer.trace?.isEmpty == false {
+                DisclosureGroup("Under the hood") {
+                    UnderTheHoodView(answer: answer)
+                        .padding(.top, 4)
+                }
+                .font(.caption.weight(.semibold))
+            }
+
             if let retrieval = message.answer?.retrieval, !retrieval.hits.isEmpty {
                 DisclosureGroup("Retrieved \(retrieval.hits.count) memories") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -159,8 +179,11 @@ struct ProfileChatView: View {
         let text = draft
         draft = ""
         let context = liveContext()
+        let digger = BrainDigger(searchCatalog: { [spotify] query, limit in
+            await spotify.searchCatalogTracks(query: query, limit: limit)
+        })
         Task {
-            await profile.answer(text, context: context, verifyRecommendation: verifyRecommendation)
+            await profile.answer(text, context: context, digger: digger, verifyRecommendation: verifyRecommendation)
         }
     }
 
@@ -239,6 +262,34 @@ struct ProfileChatView: View {
             lines.append(contentsOf: answer.evidence.map { "- \($0)" })
         }
 
+        if let trace = answer.trace, !trace.isEmpty {
+            lines.append("")
+            lines.append("Thinking:")
+            lines.append(contentsOf: trace.enumerated().map { "\($0.offset + 1). \($0.element)" })
+        }
+
+        if let spend = answer.spend, !spend.isEmpty {
+            let totalUSD = spend.reduce(0) { $0 + $1.costUSD }
+            let totalIn = spend.reduce(0) { $0 + $1.inputTokens + $1.cacheReadTokens + $1.cacheWriteTokens }
+            let totalOut = spend.reduce(0) { $0 + $1.outputTokens }
+            lines.append("")
+            lines.append("Spend: \(spend.count) calls, \(totalIn)→\(totalOut) tokens, $\(String(format: "%.4f", totalUSD))")
+            lines.append(contentsOf: spend.map { "- \($0.traceLine) [effort \($0.effort)]" })
+        }
+
+        if let dig = answer.dig {
+            lines.append("")
+            lines.append("Dig:")
+            lines.append("Seeds: \(dig.seedCount), trails: \(dig.trails.count), pool: \(dig.pool.count), rounds: \(dig.rounds ?? 1), stopped: \(dig.stopReason ?? "n/a")")
+            for candidate in dig.pool {
+                var meta: [String] = []
+                if let year = candidate.releaseYear { meta.append(String(year)) }
+                if let pop = candidate.popularity { meta.append("popularity \(pop)") }
+                let suffix = meta.isEmpty ? "" : " (\(meta.joined(separator: ", ")))"
+                lines.append("- \(candidate.title) by \(candidate.artist)\(suffix) [\(candidate.journey.title)] \(candidate.routeReason)")
+            }
+        }
+
         lines.append("")
         lines.append("Brain Trace:")
         if let retrieval = answer.retrieval {
@@ -259,6 +310,15 @@ struct ProfileChatView: View {
                 lines.append(contentsOf: retrieval.hits.map { hit in
                     "- [\(hit.nodeTitle) / \(hit.kind) / score \(String(format: "%.2f", hit.score)) / confidence \(String(format: "%.2f", hit.confidence))] \(hit.text)"
                 })
+            }
+
+            if let trails = retrieval.trails, !trails.isEmpty {
+                lines.append("")
+                lines.append("Digging Trails:")
+                for trail in trails {
+                    lines.append("- [\(trail.journey.title) / confidence \(String(format: "%.2f", trail.confidence)) / novelty \(trail.noveltyPolicy.rawValue)] \(trail.routeSummary)")
+                    lines.append(contentsOf: trail.digQueries.map { "    query (\($0.provenance.rawValue)): \($0.query)" })
+                }
             }
         } else {
             lines.append("No retrieval trace attached.")

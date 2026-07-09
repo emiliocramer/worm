@@ -67,6 +67,11 @@ enum BrainRetriever {
 
     // MARK: - Classification
 
+    /// Exposed so the answer path can decide to dig before the model is called.
+    static func classifyIntent(_ query: String) -> BrainQueryIntent {
+        classify(query)
+    }
+
     private static func classify(_ query: String) -> BrainQueryIntent {
         let normalized = BrainNoveltySet.normalized(query) ?? ""
         let queryTerms = Set(normalized.split(separator: " ").map(String.init))

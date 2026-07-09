@@ -176,6 +176,9 @@ struct BrainRetrievedContext: Codable, Hashable {
     let graphSummary: [String]
     let hits: [BrainRetrievalHit]
     let generatedAt: Date
+    /// Digging trails attached for music recommendation pulls. Optional so
+    /// older persisted chat history decodes.
+    var trails: [BrainTrail]? = nil
 
     var evidenceLines: [String] {
         hits.map { hit in
@@ -226,6 +229,9 @@ struct NodeBrainSlice: Codable, Hashable, Identifiable {
     /// Item-level evidence document for synthesis (see `BrainDossier`). Optional so
     /// older persisted snapshots decode; retrieval keeps using facts/evidence/chunks.
     var dossier: String? = nil
+    /// Typed entities for the digging layer (see `BrainSeedExtractor`). Optional
+    /// for the same decode-compatibility reason as `dossier`.
+    var seeds: [BrainSeed]? = nil
 
     var id: BrainNodeID { nodeID }
     var title: String { nodeID.title }
@@ -271,6 +277,11 @@ struct BrainContext: Codable, Hashable {
 
     var novelty: BrainNoveltySet {
         slices.reduce(BrainNoveltySet()) { $0.merged(with: $1.novelty) }
+    }
+
+    /// Structured entities across every populated slice; the trail builder's input.
+    var allSeeds: [BrainSeed] {
+        slices.flatMap { $0.seeds ?? [] }
     }
 
     var promptText: String {
@@ -365,6 +376,15 @@ struct BrainAnswer: Codable, Hashable {
     /// through local novelty and catalog verification before surfacing one.
     var recommendations: [BrainMusicRecommendation]? = nil
     var retrieval: BrainRetrievedContext? = nil
+    /// The full dig behind a music recommendation: seeds, trails, queries, and
+    /// the verified pool. Persists with the chat message for the debug surface.
+    var dig: DigResult? = nil
+    /// The step-by-step pipeline trace shown live while answering and kept on
+    /// the message afterward.
+    var trace: [String]? = nil
+    /// Every priced model call behind this answer (dig fleet + shortlist +
+    /// judge). Persists with the message for the Spend debug surface.
+    var spend: [ModelCallRecord]? = nil
 
     /// All candidates worth checking, in rank order.
     var rankedCandidates: [BrainMusicRecommendation] {
@@ -379,38 +399,22 @@ struct BrainAnswer: Codable, Hashable {
     }
 
     func withNoveltyStatus(_ status: String) -> BrainAnswer {
-        guard var recommendation else { return self }
-        recommendation.noveltyStatus = status
-        return BrainAnswer(
-            answer: answer,
-            evidence: evidence,
-            confidence: confidence,
-            recommendation: recommendation,
-            retrieval: retrieval
-        )
+        var copy = self
+        copy.recommendation?.noveltyStatus = status
+        return copy
     }
 
     func withCatalogVerification(_ verification: BrainCatalogVerification) -> BrainAnswer {
-        guard var recommendation else { return self }
-        recommendation.catalogStatus = verification.message
-        recommendation.catalogURL = verification.match?.url
-        return BrainAnswer(
-            answer: answer,
-            evidence: evidence,
-            confidence: confidence,
-            recommendation: recommendation,
-            retrieval: retrieval
-        )
+        var copy = self
+        copy.recommendation?.catalogStatus = verification.message
+        copy.recommendation?.catalogURL = verification.match?.url
+        return copy
     }
 
     func withRetrieval(_ retrieval: BrainRetrievedContext) -> BrainAnswer {
-        BrainAnswer(
-            answer: answer,
-            evidence: evidence,
-            confidence: confidence,
-            recommendation: recommendation,
-            retrieval: retrieval
-        )
+        var copy = self
+        copy.retrieval = retrieval
+        return copy
     }
 }
 

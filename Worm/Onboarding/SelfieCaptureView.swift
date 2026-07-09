@@ -39,6 +39,8 @@ struct SelfieCaptureView: View {
                 SnackingWorm(
                     restCenter: wormCenter,
                     gulpStart: gulpStart,
+                    fromSize: .seed,
+                    toSize: .afterSelfie,
                     color: ink,
                     eyeColor: paper
                 )
@@ -232,12 +234,31 @@ private struct ShutterButtonStyle: ButtonStyle {
 
 // MARK: - The worm, waiting for his snack
 
-/// The onboarding dot worm, drawn full-screen so he's never clipped. When
-/// `gulpStart` lands he pops fat for a beat, hops, and settles back to his
-/// normal girth but about twice as long — he DID just eat your face.
-private struct SnackingWorm: View {
+struct OnboardingWormSize: Equatable {
+    var length: CGFloat
+    var thickness: CGFloat
+
+    static let seed = OnboardingWormSize(length: 15, thickness: 16)
+    static let afterSelfie = OnboardingWormSize(length: 30, thickness: 16)
+    static let afterMusic = OnboardingWormSize(length: 118, thickness: 16)
+
+    func interpolated(to target: OnboardingWormSize, progress: CGFloat) -> OnboardingWormSize {
+        let p = min(max(progress, 0), 1)
+        return OnboardingWormSize(
+            length: length + (target.length - length) * p,
+            thickness: thickness + (target.thickness - thickness) * p
+        )
+    }
+}
+
+/// The onboarding worm, drawn full-screen so he's never clipped. When
+/// `gulpStart` lands he pops fat for a beat, hops, and settles at the next
+/// learned size.
+struct SnackingWorm: View {
     var restCenter: CGPoint
     var gulpStart: Double?
+    var fromSize: OnboardingWormSize
+    var toSize: OnboardingWormSize
     var color: Color
     var eyeColor: Color
 
@@ -258,17 +279,19 @@ private struct SnackingWorm: View {
                 w.eyeColor = eyeColor
 
                 var length: CGFloat = 15
-                var thickness: CGFloat = 16
+                var thickness: CGFloat = fromSize.thickness
                 var center = restCenter
+                length = fromSize.length
 
                 if let g = gulpStart {
                     let dt = max(0, t - g)
-                    // A fast fat pop that fully deflates, and a permanent stretch:
-                    // eating doesn't fatten him, it grows him to about twice as long.
+                    // A fast fat pop that fully deflates, and a permanent stretch
+                    // to the next learned length.
                     let pop = dt < 0.16 ? dt / 0.16 : exp(-(dt - 0.16) * 2.4)
-                    let settled = min(1, dt / 0.8)
-                    thickness *= 1 + CGFloat(pop) * 1.0
-                    length *= 1 + CGFloat(pop) * 0.3 + CGFloat(settled) * 1.0
+                    let settled = smoothstep(min(1, dt / 0.8))
+                    let grown = fromSize.interpolated(to: toSize, progress: CGFloat(settled))
+                    thickness = grown.thickness + fromSize.thickness * CGFloat(pop) * 1.0
+                    length = grown.length + fromSize.length * CGFloat(pop) * 0.3
                     // Happy hop once it's down.
                     let hop = dt - 0.22
                     if hop > 0, hop < 0.55 {
@@ -280,6 +303,47 @@ private struct SnackingWorm: View {
                 let x0 = center.x - length / 2
                 let centerline = (0...10).map {
                     CGPoint(x: x0 + length * CGFloat($0) / 10, y: center.y)
+                }
+                w.draw(in: context, centerline: centerline, time: t)
+            }
+        }
+    }
+
+    private func smoothstep(_ x: Double) -> Double {
+        let c = min(max(x, 0), 1)
+        return c * c * (3 - 2 * c)
+    }
+}
+
+/// A fixed-size worm glyph for loader-sized placements. It uses the same body
+/// metrics as `SnackingWorm`, so the length users just watched grow is the
+/// length they keep seeing in the next step.
+struct OnboardingWormGlyph: View {
+    var size: OnboardingWormSize
+    var color: Color
+    var eyeColor: Color
+
+    private static let worm = Worm(
+        wobbleRatio: 0.06,
+        gaitHeightRatio: 0.3,
+        gaitSpeed: 2.4,
+        gaitStepiness: 0.06,
+        gaitDrift: 0.02
+    )
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            Canvas { context, canvasSize in
+                var w = Self.worm
+                w.color = color
+                w.eyeColor = eyeColor
+                w.thickness = size.thickness
+
+                let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+                let x0 = center.x - size.length / 2
+                let centerline = (0...10).map {
+                    CGPoint(x: x0 + size.length * CGFloat($0) / 10, y: center.y)
                 }
                 w.draw(in: context, centerline: centerline, time: t)
             }

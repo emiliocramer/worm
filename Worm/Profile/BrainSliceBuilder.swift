@@ -105,7 +105,8 @@ enum BrainSliceBuilder {
             confidence: populated ? 0.9 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
             novelty: spotifyNovelty(node),
-            dossier: populated ? BrainDossier.spotify(from: node) : nil
+            dossier: populated ? BrainDossier.spotify(from: node) : nil,
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 
@@ -158,7 +159,8 @@ enum BrainSliceBuilder {
             confidence: populated ? 0.82 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
             novelty: appleMusicNovelty(node),
-            dossier: populated ? BrainDossier.appleMusic(from: node) : nil
+            dossier: populated ? BrainDossier.appleMusic(from: node) : nil,
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 
@@ -260,7 +262,8 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.78 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
-            novelty: BrainNoveltySet()
+            novelty: BrainNoveltySet(),
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 
@@ -400,7 +403,8 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.74 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
-            novelty: BrainNoveltySet()
+            novelty: BrainNoveltySet(),
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 
@@ -445,7 +449,8 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.72 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
-            novelty: BrainNoveltySet()
+            novelty: BrainNoveltySet(),
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 
@@ -498,7 +503,8 @@ enum BrainSliceBuilder {
             freshness: node.lastSyncedAt,
             confidence: populated ? 0.68 : 0.0,
             health: node.isSyncing ? "syncing" : populated ? "ready" : node.isAuthorized ? "connected but empty" : "not connected",
-            novelty: BrainNoveltySet()
+            novelty: BrainNoveltySet(),
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 
@@ -529,7 +535,8 @@ enum BrainSliceBuilder {
             freshness: node.lastAnalyzedAt,
             confidence: analysis?.confidence ?? 0,
             health: node.isAnalyzing ? "reading" : populated ? "ready" : node.hasSelfie ? "captured, not read" : "not connected",
-            novelty: BrainNoveltySet()
+            novelty: BrainNoveltySet(),
+            seeds: populated ? BrainSeedExtractor.seeds(for: node) : nil
         )
     }
 

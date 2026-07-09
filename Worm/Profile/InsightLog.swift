@@ -13,6 +13,7 @@ enum InsightLog {
         let insights: [BrainSynthesizer.SynthesisResult.RawInsight]
         let answer: BrainAnswer?
         let retrieval: BrainRetrievedContext?
+        var dig: DigResult? = nil
         let error: String?
     }
 
@@ -44,7 +45,7 @@ enum InsightLog {
         ))
     }
 
-    static func recordQuery(query: BrainQuery, context: BrainContext, result: BrainAnswer) {
+    static func recordQuery(query: BrainQuery, context: BrainContext, result: BrainAnswer, dig: DigResult? = nil) {
         write(Report(
             generatedAt: ISO8601DateFormatter().string(from: Date()),
             kind: "query",
@@ -54,6 +55,7 @@ enum InsightLog {
             insights: [],
             answer: result,
             retrieval: result.retrieval,
+            dig: dig,
             error: nil
         ))
     }

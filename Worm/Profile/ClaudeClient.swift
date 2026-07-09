@@ -1,5 +1,22 @@
 import Foundation
 
+/// Token usage reported by the Messages API for one call.
+struct ClaudeUsage: Codable, Hashable {
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var cacheCreationInputTokens: Int = 0
+    var cacheReadInputTokens: Int = 0
+}
+
+/// One completed model call: the JSON text plus everything the spend ledger
+/// needs to price it.
+struct ClaudeCompletion {
+    let text: String
+    let usage: ClaudeUsage
+    let model: String
+    let durationMs: Int
+}
+
 /// Minimal client for the Claude Messages API (`/v1/messages`) with structured
 /// JSON output. Swift has no official Anthropic SDK, so this is a thin raw-HTTP
 /// wrapper.
@@ -64,8 +81,11 @@ struct ClaudeClient {
     /// Adaptive thinking is on: without it, a constrained structured-output task
     /// with a heavy instruction set tends to loop and produce degenerate output.
     /// `maxTokens` must leave room for thinking *and* the answer.
-    func structuredCompletion(system: String, user: String, schema: [String: Any], effort: String = "high", maxTokens: Int = 8192, speed: String? = nil) async throws -> String {
-        try await send(system: system, content: user, schema: schema, effort: effort, maxTokens: maxTokens, speed: speed)
+    ///
+    /// `model` overrides the client default per call — the dig routes cheap
+    /// mechanical hops to Haiku/Sonnet and keeps the judge on Opus.
+    func structuredCompletion(system: String, user: String, schema: [String: Any], effort: String = "high", maxTokens: Int = 8192, speed: String? = nil, model: String? = nil) async throws -> ClaudeCompletion {
+        try await send(system: system, content: user, schema: schema, effort: effort, maxTokens: maxTokens, speed: speed, model: model)
     }
 
     /// Same as `structuredCompletion`, but the user turn carries an image (as a
@@ -76,23 +96,34 @@ struct ClaudeClient {
             ["type": "image", "source": ["type": "base64", "media_type": mediaType, "data": imageData.base64EncodedString()]],
             ["type": "text", "text": user],
         ]
-        return try await send(system: system, content: content, schema: schema, effort: effort, maxTokens: maxTokens)
+        return try await send(system: system, content: content, schema: schema, effort: effort, maxTokens: maxTokens).text
     }
 
     /// Shared request path. `content` is whatever the Messages API accepts for a
     /// user turn's `content`: a plain string, or an array of content blocks.
-    private func send(system: String, content: Any, schema: [String: Any], effort: String, maxTokens: Int, speed: String? = nil) async throws -> String {
+    private func send(system: String, content: Any, schema: [String: Any], effort: String, maxTokens: Int, speed: String? = nil, model modelOverride: String? = nil) async throws -> ClaudeCompletion {
         guard apiKey != nil || !requiresDirectAnthropicKey else { throw ClaudeError.missingKey }
+        let requestedModel = modelOverride ?? model
+
+        // Haiku 4.5 predates adaptive thinking and the effort parameter; both
+        // return a 400 there. The cheap tier runs bare structured output.
+        let supportsAdaptive = !requestedModel.lowercased().contains("haiku")
 
         func makeRequest(fast: Bool) throws -> URLRequest {
+            var outputConfig: [String: Any] = ["format": ["type": "json_schema", "schema": schema]]
+            if supportsAdaptive { outputConfig["effort"] = effort }
             var body: [String: Any] = [
-                "model": model,
+                "model": requestedModel,
                 "max_tokens": maxTokens,
-                "thinking": ["type": "adaptive"],
-                "system": system,
+                // System goes as a block with a cache breakpoint: the stable
+                // prompt + taste brief is shared across the dig's fleet of
+                // calls, so repeat sends bill at cache-read rates once the
+                // prefix clears the model's cacheable minimum.
+                "system": [["type": "text", "text": system, "cache_control": ["type": "ephemeral"]]],
                 "messages": [["role": "user", "content": content]],
-                "output_config": ["format": ["type": "json_schema", "schema": schema], "effort": effort],
+                "output_config": outputConfig,
             ]
+            if supportsAdaptive { body["thinking"] = ["type": "adaptive"] }
             if fast, let speed { body["speed"] = speed }
 
             var request = URLRequest(url: baseURL.appending(path: "v1/messages"))
@@ -116,6 +147,7 @@ struct ClaudeClient {
         // attempt fall back to standard speed.
         let maxAttempts = 6
         var lastError: Error = ClaudeError.malformedResponse
+        let startedAt = Date()
         for attempt in 0..<maxAttempts {
             if attempt > 0 {
                 let delay = min(pow(2.0, Double(attempt - 1)) * 1.5, 20) + Double.random(in: 0...1.0)
@@ -147,7 +179,17 @@ struct ClaudeClient {
                 guard let text = decoded.content.first(where: { $0.type == "text" })?.text, !text.isEmpty else {
                     throw ClaudeError.malformedResponse
                 }
-                return text
+                return ClaudeCompletion(
+                    text: text,
+                    usage: ClaudeUsage(
+                        inputTokens: decoded.usage?.inputTokens ?? 0,
+                        outputTokens: decoded.usage?.outputTokens ?? 0,
+                        cacheCreationInputTokens: decoded.usage?.cacheCreationInputTokens ?? 0,
+                        cacheReadInputTokens: decoded.usage?.cacheReadInputTokens ?? 0
+                    ),
+                    model: decoded.model ?? requestedModel,
+                    durationMs: Int(Date().timeIntervalSince(startedAt) * 1000)
+                )
             } catch let error as URLError where Self.isRetryable(urlError: error) {
                 lastError = error
             }
@@ -173,6 +215,23 @@ struct ClaudeClient {
             let type: String
             let text: String?
         }
+
+        struct Usage: Decodable {
+            let inputTokens: Int?
+            let outputTokens: Int?
+            let cacheCreationInputTokens: Int?
+            let cacheReadInputTokens: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case inputTokens = "input_tokens"
+                case outputTokens = "output_tokens"
+                case cacheCreationInputTokens = "cache_creation_input_tokens"
+                case cacheReadInputTokens = "cache_read_input_tokens"
+            }
+        }
+
         let content: [Block]
+        let usage: Usage?
+        let model: String?
     }
 }

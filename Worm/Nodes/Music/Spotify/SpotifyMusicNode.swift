@@ -719,6 +719,19 @@ final class SpotifyMusicNode {
         }
     }
 
+    /// Raw catalog track search for the digging layer. Field filters
+    /// (label:, genre:, year:, tag:hipster) pass straight through. Errors
+    /// come back as an empty result; the digger logs the query outcome.
+    func searchCatalogTracks(query: String, limit: Int = 20) async -> [SpotifyTrack] {
+        guard isConfigured else { return [] }
+        do {
+            let token = try await validAccessToken()
+            return try await api.searchTracks(accessToken: token, query: query, limit: limit).tracks.items
+        } catch {
+            return []
+        }
+    }
+
     func verifyCatalogRecommendation(_ recommendation: BrainMusicRecommendation) async -> BrainCatalogVerification {
         guard isConfigured else {
             return .unavailable("Spotify", message: "Spotify is not configured for catalog verification.")

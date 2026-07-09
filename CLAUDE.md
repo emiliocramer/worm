@@ -39,6 +39,14 @@ xcodebuild -project Worm.xcodeproj -scheme Worm \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
+Unit tests (`WormTests/`, deterministic brain/digging logic) run on a simulator:
+
+```sh
+xcodebuild -project Worm.xcodeproj -scheme Worm \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -configuration Debug test CODE_SIGNING_ALLOWED=NO
+```
+
 Editor (SourceKit) diagnostics often show stale "cannot find X in scope" /
 "No such module UIKit" errors right after adding files or because indexing runs
 against macOS — trust the `xcodebuild` result over them.
@@ -55,6 +63,11 @@ against macOS — trust the `xcodebuild` result over them.
 - `Profile/` — brain slices, deterministic retrieval, `TasteProfile`,
   `BrainSynthesizer`, debug chat, and the profile surface. Nodes feed slices;
   only the brain talks to Claude.
+- `Profile/Digging/` — the secondary-effect layer for music discovery: typed
+  seeds (carried on slices), `HeroJourney` predicates, trail building, and
+  `BrainDigger`, which turns trails into real Spotify catalog searches and a
+  novelty-filtered candidate pool before the model ranks anything. See
+  `docs/secondary-effect-nodes.md`.
 
 Adding a node: create its `@Observable` manager + detail view, add a `NodeRoute`
 case (wired in `RootView`), add it to `PersonalityGraphView.nodeList`, inject it
