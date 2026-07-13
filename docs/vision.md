@@ -310,6 +310,10 @@ breaks the entire promise harder than no insight. **Silence beats a miss.**
 - Dev-flagged node graph behind the home screen.
 - Brain foundation: per-node slices, combined brain context, Claude-backed
   synthesis/query boundary, local novelty checks, and Profile -> Brain Chat.
+- Node progression: the engagement loop that drips unlockable brain nodes on a
+  countdown, each granting a reward (growth, cosmetic, dormant recommendation),
+  gated by a local notification and falling back to a perpetual cooldown. See
+  `docs/node-progression.md`.
 
 **Next:**
 - Streaming insight engine over the brain slices (Spotify first for §7 instant

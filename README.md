@@ -37,6 +37,10 @@ are important evidence, but YouTube, Contacts, Photos, Calendar, and future
 culture/media nodes must be able to change the pick. A recommendation has to be
 new, real, catalog verified, and explainable from the whole taste profile.
 
+`docs/node-progression.md` covers the engagement loop that drips unlockable
+brain nodes on a countdown, each growing the worm and granting a reward, gated by
+a local notification and backed by a perpetual cooldown.
+
 `docs/secondary-effect-nodes.md` sketches the next discovery layer: derived
 rabbit-hole trails from raw node data into producers, collaborators, labels,
 scenes, places, routines, and other downstream paths Worm can dig before
