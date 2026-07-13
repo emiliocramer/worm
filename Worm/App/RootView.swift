@@ -5,49 +5,64 @@ import SwiftUI
 struct RootView: View {
     @State private var showSplash = true
     @AppStorage("worm.hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    private let paper = Color(red: 0.97, green: 0.96, blue: 0.93)
 
     var body: some View {
         ZStack {
-            NavigationStack {
-                Group {
-                    if hasCompletedOnboarding {
-                        HomeView(allowsDiggingHaptics: !showSplash)
-                    } else {
-                        OnboardingView()
-                    }
-                }
-                .navigationDestination(for: NodeRoute.self) { route in
-                        switch route {
-                        case .profile:
-                            ProfileView()
-                        case .profileChat:
-                            ProfileChatView()
-                        case .graph:
-                            PersonalityGraphView()
-                        case .spotify:
-                            MusicNodeView()
-                        case .appleMusic:
-                            AppleMusicNodeView()
-                        case .youtube:
-                            YouTubeCultureNodeView()
-                        case .contacts:
-                            ContactsNodeView()
-                        case .photos:
-                            PhotosNodeView()
-                        case .calendar:
-                            CalendarNodeView()
-                        case .selfie:
-                            SelfieNodeView()
+            paper.ignoresSafeArea()
+
+            if !showSplash {
+                NavigationStack {
+                    Group {
+                        if hasCompletedOnboarding {
+                            // Home's entrance starts on appear; keep it unmounted
+                            // until the splash is fully gone so the first crawl
+                            // becomes the transition into home, not background work.
+                            WormHomeView()
+                                .transition(.opacity)
+                        } else {
+                            OnboardingView()
+                                .transition(.opacity)
                         }
                     }
+                    .animation(.easeInOut(duration: 0.7), value: hasCompletedOnboarding)
+                    .navigationDestination(for: NodeRoute.self) { route in
+                            switch route {
+                            case .profile:
+                                ProfileView()
+                            case .digging:
+                                HomeView(allowsDiggingHaptics: true)
+                            case .profileChat:
+                                ProfileChatView()
+                            case .graph:
+                                PersonalityGraphView()
+                            case .spotify:
+                                MusicNodeView()
+                            case .appleMusic:
+                                AppleMusicNodeView()
+                            case .youtube:
+                                YouTubeCultureNodeView()
+                            case .contacts:
+                                ContactsNodeView()
+                            case .photos:
+                                PhotosNodeView()
+                            case .calendar:
+                                CalendarNodeView()
+                            case .selfie:
+                                SelfieNodeView()
+                            }
+                        }
+                }
             }
 
             if showSplash {
-                WormSplashView(onFinished: { showSplash = false })
-                    .transition(.opacity)
+                WormSplashView(onFinished: {
+                    showSplash = false
+                })
                     .zIndex(1)
             }
         }
+        .dismissKeyboardOnOutsideTap()
     }
 }
 

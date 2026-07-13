@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// Renders a worm body along a centerline polyline: a pointy tail that swells
-/// into a belly and rounds off into a head, with an optional eye. Reusable by
-/// anything that can produce a centerline (the splash, the loader, …) so the
-/// little guy looks consistent everywhere.
+/// Renders a worm body along a centerline polyline: a continuous rounded tube
+/// with an optional eye. Reusable by anything that can produce a centerline
+/// (the splash, the loader, …) so the little guy looks consistent everywhere.
 enum WormBody {
     static func draw(
         _ context: GraphicsContext,
@@ -17,38 +16,21 @@ enum WormBody {
 
         let maxR = maxWidth / 2
 
-        // A thin worm of constant width: uniform body with naturally rounded ends
-        // (the end stamps are full circles), no taper and no bulbous head.
+        // Uniform body width with naturally rounded stroke caps, no bead stamps.
         func radius(_ u: CGFloat) -> CGFloat {
             maxR
         }
 
-        // Stamp overlapping circles along the centerline and union them with a
-        // single fill. This stays perfectly round and unbroken even where the
-        // path turns sharply (e.g. the "r"), unlike an offset ribbon.
-        var blob = Path()
-        func stamp(_ c: CGPoint, _ r: CGFloat) {
-            blob.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+        var body = Path()
+        body.move(to: points[0])
+        for point in points.dropFirst() {
+            body.addLine(to: point)
         }
-
-        for i in 0..<n {
-            let u = CGFloat(i) / CGFloat(n - 1)
-            let r = radius(u)
-            stamp(points[i], r)
-
-            // If samples are sparse relative to the radius, add a midpoint stamp
-            // so the tube never gaps.
-            if i < n - 1 {
-                let next = points[i + 1]
-                let d = hypot(next.x - points[i].x, next.y - points[i].y)
-                if d > r * 0.6 {
-                    let uMid = (CGFloat(i) + 0.5) / CGFloat(n - 1)
-                    stamp(CGPoint(x: (points[i].x + next.x) / 2, y: (points[i].y + next.y) / 2), radius(uMid))
-                }
-            }
-        }
-
-        context.fill(blob, with: .color(color))
+        context.stroke(
+            body,
+            with: .color(color),
+            style: StrokeStyle(lineWidth: maxWidth, lineCap: .round, lineJoin: .round)
+        )
 
         // Eye — a small hole near the top of the tapered head, facing travel.
         if let eyeColor {
@@ -69,9 +51,4 @@ enum WormBody {
             )
         }
     }
-}
-
-private func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ x: CGFloat) -> CGFloat {
-    let t = min(max((x - edge0) / (edge1 - edge0), 0), 1)
-    return t * t * (3 - 2 * t)
 }

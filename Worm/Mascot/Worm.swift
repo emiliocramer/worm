@@ -40,6 +40,17 @@ struct Worm {
         gaitStepiness: 0.1,
         gaitDrift: 0.06
     )
+
+    /// The learned/snacking worm used through onboarding and home. Keeping this
+    /// definition here makes the app share the exact same body language instead
+    /// of each surface re-creating the mascot's movement constants.
+    static let snacking = Worm(
+        wobbleRatio: 0.06,
+        gaitHeightRatio: 0.3,
+        gaitSpeed: 2.4,
+        gaitStepiness: 0.06,
+        gaitDrift: 0.02
+    )
 }
 
 extension Worm {
@@ -118,6 +129,17 @@ extension Worm {
         }
 
         WormBody.draw(context, centerline: line, maxWidth: thickness, color: color, eyeColor: eyeColor)
+    }
+
+    /// A densely sampled straight resting track. Large worms need more samples
+    /// than the tiny onboarding seed; otherwise the gait bends the tube through a
+    /// visibly segmented polyline.
+    static func straightCenterline(center: CGPoint, length: CGFloat) -> [CGPoint] {
+        let steps = max(18, Int((length / 4).rounded(.up)))
+        let x0 = center.x - length / 2
+        return (0...steps).map {
+            CGPoint(x: x0 + length * CGFloat($0) / CGFloat(steps), y: center.y)
+        }
     }
 
     /// Light smoothing so hard corners (e.g. the angular "r") round off the way

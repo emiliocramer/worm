@@ -5,6 +5,12 @@ import SwiftUI
 /// node at this point, so the first "it gets me" moment is a single taste-profile
 /// draw from that slice, not a canned line.
 struct OnboardingView: View {
+    /// Demo replay (from Profile): the exact first-run flow, except the
+    /// Spotify connect is a ghost — no OAuth, and the reveal is a template
+    /// insight — so the whole FTUE story into home can be watched anytime.
+    var demo = false
+    var onFinished: (() -> Void)? = nil
+
     @Environment(SpotifyMusicNode.self) private var spotify
     @Environment(SelfieNode.self) private var selfie
     @Environment(TasteProfile.self) private var profile
@@ -512,6 +518,16 @@ struct OnboardingView: View {
         guard !isConnecting else { return }
         isConnecting = true
         Haptics.impact(.medium)
+        if demo {
+            // Ghost connect: no OAuth sheet, straight into the same
+            // feed-the-worm beat the real flow lands on.
+            Task {
+                try? await Task.sleep(for: .seconds(0.6))
+                isConnecting = false
+                await absorbMusicThenProceed()
+            }
+            return
+        }
         let startingAuthorizationVersion = spotify.authorizationVersion
         Task { await spotify.connectForOnboarding() }   // presents the OAuth sheet
         Task { await waitForAuthThenProceed(after: startingAuthorizationVersion) }
@@ -582,7 +598,19 @@ struct OnboardingView: View {
         guard phase == .working else { return }
 
         guard !Task.isCancelled else { return }
-        if let insight = await FirstInsightPipeline.runSpotifyFirstInsight(
+        if demo {
+            // Template insight: the dig loader breathes for a couple of
+            // beats, then a canned on-voice line lands the reveal.
+            try? await Task.sleep(for: .seconds(2.6))
+            guard phase == .working, !Task.isCancelled else { return }
+            reveal(Insight(
+                line: "You never actually left 2006.",
+                evidence: "demo template",
+                confidence: 0.9,
+                source: .spotify
+            ))
+            try? await Task.sleep(for: .seconds(1.1))
+        } else if let insight = await FirstInsightPipeline.runSpotifyFirstInsight(
             spotify: spotify,
             profile: profile,
             selfie: selfie
@@ -605,7 +633,11 @@ struct OnboardingView: View {
 
     private func finish() {
         Haptics.success()
-        hasCompletedOnboarding = true
+        if demo {
+            onFinished?()
+        } else {
+            hasCompletedOnboarding = true
+        }
     }
 }
 

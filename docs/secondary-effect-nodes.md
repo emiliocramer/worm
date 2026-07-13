@@ -395,6 +395,97 @@ stage failing routes back to the previous revision's path, logged.
 - No graph UI for effect nodes; depth-2/3 nodes stay brain-only until they
   earn surface area, per the original visibility rules.
 
+## Revision C (implemented) — More Journeys, Real Stories, Variety Pressure
+
+Three consecutive live pulls surfaced soul-adjacent picks through the same two
+journeys. The skew had three identifiable sources, all fixed here:
+
+1. **The journey gate was too narrow.** Only 2 of 12 journeys ever activated
+   for this profile, both keyed on the substring "soul" in one genre tag, and
+   an unmatched profile would produce zero trails and silently skip the
+   expedition entirely.
+2. **The signal layer under-read the data.** Playlists literally named after
+   artists (the loudest devotion signal there is) and photo albums titled
+   after places ("Mexxiiicooooo") produced no seeds at all.
+3. **Memory only reinforced winners.** `journeyWins` boosted the last
+   successful route with no counterweight — a rich-get-richer loop.
+
+### Six new journeys from real, sourced digging stories
+
+`docs/digging-journeys/008-012` are new sourced entries (Chino Moreno's
+Team Sleep/Crosses side doors and Aphex Twin's alias tree; Metro Boomin's
+producer-to-artist chain; Lori McKenna behind "Humble and Kind"; the Real Rock
+riddim's hundreds of versions; SAULT's anonymous drops — each with citations).
+They distill into journeys 13-18 in `hero-journeys.md` and six new
+`HeroJourney` cases:
+
+- **The Alias & Side Door** — gated on the new `devotion` seed type: a
+  playlist named after an artist. Follow the person out of the band.
+- **The Producer Chain** — gated on producer-culture genres (trap, drill,
+  grime, …). Follow the beat tag into the producer's own records.
+- **The Songwriter's Shadow** — gated on country/folk/singer-songwriter.
+  Follow the writing credit into the writer's own catalog.
+- **The Version Chain** — gated on reggae/dub/dancehall. Walk the riddim.
+- **The Anonymous Drop** — gated on the crate-digger signal. Releases that
+  evade the promo machine.
+- **The Open Crate** — the floor: barely clears the bar whenever seeds exist,
+  so the expedition ALWAYS runs and every evidenced journey outranks it. The
+  gate can no longer zero the whole system.
+
+These journeys carry no deterministic queries of their own (their relations
+are world knowledge); they exist to hand the scouts a route worth walking —
+the model proposes, the catalog promotes, exactly as before.
+
+### New seeds
+
+- **Devotion** (`SeedEntityType.devotion`): playlist titles matched against
+  artist names by normalized equality, on Spotify and Apple Music.
+- **Photo-album places**: album titles collapsed of letter runs and matched
+  against a conservative country/scene-city list ("Mexxiiicooooo" -> Mexico).
+  This is what finally connects the Mexico thread the read keeps naming.
+
+### Variety pressure (the anti-skew mechanics)
+
+- `DigMemory` now records `recentJourneys` and `recentPicks` (last 5 each) on
+  every surfaced pick.
+- Trail ranking takes a `journeyBias`: +0.05/win (capped) as before, and
+  **-0.08 per recent appearance** — the penalty outweighs the boost, so a
+  route that just won must be meaningfully better than the field to run again
+  immediately.
+- The shortlist and judge prompts receive the recent picks with an explicit
+  instruction: repeating the same artist, scene, or genre as the last few
+  picks must clear a much higher bar than opening a new corner.
+
+### More digging
+
+`maxTrails` 4 -> 5, `maxRounds` 3 -> 4. The budget ceiling is unchanged at
+$0.35 — the delegated tiers are cheap enough (a full scout+assay+foreman round
+runs ~$0.02-0.05) that depth comes from routing, not from spending more.
+
+### C.1 — journeys as vocabulary, three more sourced routes
+
+Follow-up to the "how hard are we leaning on the hardcoded journeys" audit:
+
+- **Idiom menu (the vocabulary demotion).** Every journey now carries a
+  one-line `idiom`. The Open Crate scout and the foreman receive the full
+  menu, so every digging move is available to every profile even when its
+  evidence gate did not fire. Idioms are moves, not claims — the anti-slop
+  gates still apply to anything factual. Future journeys are one doc entry,
+  one enum case, and an idiom line; gating logic is optional priority, not
+  the door.
+- **Three new sourced journeys** (docs 013-015, hero-journeys 19-21):
+  The Diaspora Thread (cumbia rebajada / Sonido Dueñez — heritage genres,
+  place-assisted), The Split & Demo (hardcore split/demo format culture —
+  DIY genres), The Interpretation Chain (Gould's two Goldbergs — classical,
+  the performer-as-discovery inversion).
+- **One journey deliberately not shipped:** a dance-music "B-Side Flip" had
+  no specific sourced story behind it. No source, no journey — the same rule
+  effect nodes live by.
+- The remaining ceiling is the seed vocabulary, not the journey count: a
+  journey can only gate on signals a node actually extracts. New nodes
+  (YouTube, media, location) widen the reachable journey set more than new
+  journey entries do.
+
 ## Terms
 
 ### Seed

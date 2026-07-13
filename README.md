@@ -1,5 +1,7 @@
 # Worm
 
+Demo clips live in [`docs/gallery/`](docs/gallery/README.md).
+
 An iOS app that hosts **personality nodes**. The shipping home is the worm's
 digging surface; the original node graph still exists as a developer surface for
 inspecting each node.

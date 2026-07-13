@@ -262,13 +262,7 @@ struct SnackingWorm: View {
     var color: Color
     var eyeColor: Color
 
-    private static let worm = Worm(
-        wobbleRatio: 0.06,
-        gaitHeightRatio: 0.3,
-        gaitSpeed: 2.4,
-        gaitStepiness: 0.06,
-        gaitDrift: 0.02
-    )
+    private static let worm = Worm.snacking
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -300,10 +294,7 @@ struct SnackingWorm: View {
                 }
 
                 w.thickness = thickness
-                let x0 = center.x - length / 2
-                let centerline = (0...10).map {
-                    CGPoint(x: x0 + length * CGFloat($0) / 10, y: center.y)
-                }
+                let centerline = Worm.straightCenterline(center: center, length: length)
                 w.draw(in: context, centerline: centerline, time: t)
             }
         }
@@ -323,13 +314,7 @@ struct OnboardingWormGlyph: View {
     var color: Color
     var eyeColor: Color
 
-    private static let worm = Worm(
-        wobbleRatio: 0.06,
-        gaitHeightRatio: 0.3,
-        gaitSpeed: 2.4,
-        gaitStepiness: 0.06,
-        gaitDrift: 0.02
-    )
+    private static let worm = Worm.snacking
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -341,10 +326,7 @@ struct OnboardingWormGlyph: View {
                 w.thickness = size.thickness
 
                 let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-                let x0 = center.x - size.length / 2
-                let centerline = (0...10).map {
-                    CGPoint(x: x0 + size.length * CGFloat($0) / 10, y: center.y)
-                }
+                let centerline = Worm.straightCenterline(center: center, length: size.length)
                 w.draw(in: context, centerline: centerline, time: t)
             }
         }

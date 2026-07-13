@@ -14,6 +14,7 @@ struct ProfileView: View {
 
     @State private var isSimulatingFirstInsight = false
     @State private var simulatedFirstInsight: Insight?
+    @State private var isReplayingOnboarding = false
 
     var body: some View {
         List {
@@ -25,6 +26,13 @@ struct ProfileView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             refreshBrainSlices()
+        }
+        // The exact first-run flow, replayed: the Spotify connect is a ghost
+        // (no OAuth, template insight), and finishing lands back on home with
+        // a demo-only worm name key, so the naming beat replays without
+        // touching the real worm's name.
+        .fullScreenCover(isPresented: $isReplayingOnboarding) {
+            OnboardingReplayDemo(onDismiss: { isReplayingOnboarding = false })
         }
     }
 
@@ -51,6 +59,12 @@ struct ProfileView: View {
             metric("Private read", profile.read == nil ? "Empty" : "Ready")
             NavigationLink(value: NodeRoute.profileChat) {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
+            }
+            Button {
+                Haptics.impact(.medium)
+                isReplayingOnboarding = true
+            } label: {
+                Label("Replay first run (demo)", systemImage: "play.circle")
             }
             Button {
                 Task { await simulateFirstInsight() }
@@ -446,6 +460,63 @@ struct ProfileView: View {
             selfie: selfie
         )
         refreshBrainSlices()
+    }
+}
+
+private struct OnboardingReplayDemo: View {
+    enum Phase { case onboarding, home }
+
+    private static let demoWormNameKey = "worm.demo.name"
+
+    let onDismiss: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var phase: Phase = .onboarding
+
+    var body: some View {
+        ZStack {
+            switch phase {
+            case .onboarding:
+                OnboardingView(demo: true) {
+                    UserDefaults.standard.removeObject(forKey: Self.demoWormNameKey)
+                    withAnimation(.easeInOut(duration: 0.65)) {
+                        phase = .home
+                    }
+                }
+                .transition(.opacity)
+            case .home:
+                NavigationStack {
+                    WormHomeView(wormNameKey: Self.demoWormNameKey)
+                }
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            UserDefaults.standard.removeObject(forKey: Self.demoWormNameKey)
+        }
+        .onDisappear {
+            UserDefaults.standard.removeObject(forKey: Self.demoWormNameKey)
+        }
+        .overlay(alignment: .topLeading) {
+            if phase == .home {
+                Button {
+                    onDismiss()
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.76))
+                        .frame(width: 44, height: 44)
+                        .liquidGlass(in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close replay")
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .transition(.opacity)
+                .zIndex(10)
+            }
+        }
     }
 }
 

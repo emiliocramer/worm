@@ -277,7 +277,9 @@ enum BrainPromptLibrary {
     - Include a concise reason tied to the brain context for each candidate.
 
     The "answer" field must never be empty: it carries the worm's short spoken
-    response even when no recommendation survives.
+    response even when no recommendation survives. And the answer text must
+    never name a song that is not also in "recommendations" — the surfaced
+    pick comes from the array, so a pick named only in prose is lost.
 
     Voice rules for "answer" and every "why" (these are worm-spoken surfaces):
     - Never use the "—" or "–" character; use two sentences instead.

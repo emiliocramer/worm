@@ -238,7 +238,7 @@ struct BrainSynthesizer {
         context: BrainContext,
         ledger: SpendLedger? = nil
     ) async throws -> [CatalogDigQuery] {
-        let user = """
+        var user = """
         User question: \(question)
 
         Taste brief:
@@ -252,6 +252,12 @@ struct BrainSynthesizer {
 
         \(context.noveltyPromptSample(limit: 25))
         """
+        if trail.journey == .openCrate {
+            // The open crate carries no idiom of its own: hand the scout the
+            // full menu so every digging move is available to every profile,
+            // whether or not its evidence gate fired.
+            user += "\n\nDigging idioms menu — pick whichever fits this taste brief best and name it in each rationale:\n\(HeroJourney.idiomMenu)"
+        }
         let completion = try await client.structuredCompletion(
             system: BrainPromptLibrary.scoutPrompt,
             user: user,
@@ -363,6 +369,9 @@ struct BrainSynthesizer {
         \(trailLines)
 
         Budget remaining: $\(String(format: "%.2f", budgetRemainingUSD)). A follow-up round costs roughly $0.05.
+
+        Digging idioms menu (framings you may borrow for follow-up queries):
+        \(HeroJourney.idiomMenu)
         """
         let completion = try await client.structuredCompletion(
             system: BrainPromptLibrary.foremanPrompt,
@@ -390,6 +399,7 @@ struct BrainSynthesizer {
         pool: [DugCandidate],
         question: String,
         context: BrainContext,
+        recent: [String] = [],
         ledger: SpendLedger? = nil
     ) async throws -> [(candidate: DugCandidate, reason: String)] {
         let rows = pool.enumerated().map { index, candidate in
@@ -401,7 +411,7 @@ struct BrainSynthesizer {
             return "\(index). \(candidate.title) by \(candidate.artist) (\(meta.joined(separator: ", "))) [route: \(candidate.journey.title), via: \(candidate.routeReason)]"
         }.joined(separator: "\n")
 
-        let user = """
+        var user = """
         User question: \(question)
 
         Taste brief:
@@ -410,6 +420,10 @@ struct BrainSynthesizer {
         Graded pool (0-indexed):
         \(rows)
         """
+        if !recent.isEmpty {
+            user += "\n\nRecently surfaced picks (keep the shortlist varied against these; prefer candidates opening a different corner):\n"
+                + recent.map { "- \($0)" }.joined(separator: "\n")
+        }
         let completion = try await client.structuredCompletion(
             system: BrainPromptLibrary.shortlistPrompt,
             user: user,
@@ -440,7 +454,7 @@ struct BrainSynthesizer {
         if let dig, dig.hasPool {
             var plate = dig.pool
             do {
-                let picks = try await shortlist(pool: dig.pool, question: query.text, context: context, ledger: ledger)
+                let picks = try await shortlist(pool: dig.pool, question: query.text, context: context, recent: dig.recentPicks ?? [], ledger: ledger)
                 if !picks.isEmpty {
                     plate = picks.map { pick in
                         let candidate = pick.candidate
@@ -490,6 +504,10 @@ struct BrainSynthesizer {
             Verified candidate shortlist. Every entry is a real catalog track that already passed the user's full novelty memory and a grading pass:
             \(plateLines)
             """
+            if let recent = dig.recentPicks, !recent.isEmpty {
+                user += "\n\nRecently surfaced picks. Vary the angle: a pick that repeats the same artist, scene, or genre as these must clear a much higher bar than one that opens a new corner of the taste brief:\n"
+                    + recent.map { "- \($0)" }.joined(separator: "\n")
+            }
         } else {
             user = """
             User question:
@@ -706,6 +724,9 @@ struct BrainSynthesizer {
                 "items": recommendationSchema,
             ],
         ],
-        "required": ["answer", "evidence", "confidence"],
+        // recommendations is required so the model must emit the key: the
+        // observed failure mode was naming picks in the answer text while
+        // omitting the array entirely.
+        "required": ["answer", "evidence", "confidence", "recommendations"],
     ]
 }

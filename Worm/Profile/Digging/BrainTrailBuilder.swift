@@ -15,14 +15,22 @@ enum BrainTrailBuilder {
     /// Journeys below this evidence score build no trail.
     static let minimumJourneyScore = 0.35
 
-    static func build(from seeds: [BrainSeed], maxTrails: Int = 4) -> Output {
+    /// `journeyBias` adjusts scores per journey rawValue: dig memory boosts
+    /// past winners and penalizes recently surfaced routes so consecutive
+    /// pulls vary their angle instead of re-digging the same scene.
+    static func build(from seeds: [BrainSeed], maxTrails: Int = 5, journeyBias: [String: Double] = [:]) -> Output {
         guard !seeds.isEmpty else { return Output(trails: [], effectNodes: []) }
 
-        let scored = HeroJourney.allCases
-            .map { (journey: $0, score: $0.score(seeds)) }
-            .filter { $0.score >= minimumJourneyScore }
-            .sorted { $0.score > $1.score }
-            .prefix(maxTrails)
+        var ranked: [(journey: HeroJourney, score: Double)] = []
+        for journey in HeroJourney.allCases {
+            let bias = journeyBias[journey.rawValue] ?? 0
+            let value = max(0.0, journey.score(seeds) + bias)
+            if value >= minimumJourneyScore {
+                ranked.append((journey, value))
+            }
+        }
+        ranked.sort { $0.score > $1.score }
+        let scored = ranked.prefix(maxTrails)
 
         var effects: [SecondaryEffectNode] = []
         var trails: [BrainTrail] = []
@@ -214,6 +222,87 @@ enum BrainTrailBuilder {
                 addQuery("label:\"\(label.title)\"", "album-first entry points on \(label.title)")
             }
             summary = "Saves whole records; find the album path first, then the song."
+
+        case .aliasSideDoor:
+            let devotions = strongest(seeds, .devotion, limit: 3)
+            for devotion in devotions {
+                addEffect(.creatorLens, title: "the person behind \(devotion.title)",
+                          relation: "side projects, aliases, and label-evasion drops",
+                          sources: [devotion], confidence: devotion.strength)
+            }
+            summary = "Named a playlist after \(devotions.map(\.title).joined(separator: ", ")); follow the person out the side door: side projects, aliases, anonymous drops, the single under the other name."
+
+        case .producerChain:
+            if let genre = genres.first(where: { seed in
+                HeroJourney.producerCultureGenres.contains(where: { seed.title.lowercased().contains($0) })
+            }) ?? genres.first {
+                addEffect(.genreScene, title: "\(genre.title) producer chain",
+                          relation: "the recurring producer behind the favorite tracks",
+                          sources: [genre], confidence: genre.strength)
+            }
+            summary = "Lives in a producer-driven scene; follow the beat tag into the producer's own albums, curation projects, and instrumentals."
+
+        case .songwriterShadow:
+            if let genre = genres.first(where: { seed in
+                HeroJourney.songwriterGenres.contains(where: { seed.title.lowercased().contains($0) })
+            }) {
+                addEffect(.genreScene, title: "\(genre.title) writing credits",
+                          relation: "the songwriter behind the famous cut",
+                          sources: [genre], confidence: genre.strength)
+            }
+            summary = "Loves written songs; follow the credit under the famous name into the songwriter's own catalog and their version of the hit."
+
+        case .versionChain:
+            if let genre = genres.first(where: { seed in
+                HeroJourney.versionCultureGenres.contains(where: { seed.title.lowercased().contains($0) })
+            }) {
+                addEffect(.genreScene, title: "\(genre.title) version culture",
+                          relation: "the riddim under the tune and everyone who voiced it",
+                          sources: [genre], confidence: genre.strength)
+                addQuery("\"riddim\"", "version chains: the same rhythm voiced by different artists across decades")
+            }
+            summary = "Version-culture taste; find the riddim under a loved tune and walk the artists who voiced it."
+
+        case .anonymousDrop:
+            summary = "Comfortable off the promo grid; dig surprise drops, anonymous collectives, and limited-window releases."
+
+        case .openCrate:
+            summary = "No single route dominates; the scouts read the whole taste brief and pick the corner worth digging."
+
+        case .diasporaThread:
+            if let genre = genres.first(where: { seed in
+                HeroJourney.heritageGenres.contains(where: { seed.title.lowercased().contains($0) })
+            }) {
+                addEffect(.genreScene, title: "\(genre.title) lineage",
+                          relation: "the heritage canon and the scenes that reworked it",
+                          sources: [genre], confidence: genre.strength)
+            }
+            for place in places.prefix(1) {
+                addEffect(.placeScene, title: place.title,
+                          relation: "the place the lineage runs through",
+                          sources: [place], confidence: place.strength)
+            }
+            summary = "A heritage lineage runs through the profile; dig the canon that crossed over (the parents' radio) and the scenes that reworked it (sonideros, revivals, border genres)."
+
+        case .splitAndDemo:
+            if let genre = genres.first(where: { seed in
+                HeroJourney.diyGenres.contains(where: { seed.title.lowercased().contains($0) })
+            }) {
+                addEffect(.genreScene, title: "\(genre.title) DIY infrastructure",
+                          relation: "splits, demos, EPs, and label pages as the discovery format",
+                          sources: [genre], confidence: genre.strength)
+            }
+            summary = "DIY-scene taste; dig by format: the other side of the split, the demo before the album, the tiny label page."
+
+        case .interpretationChain:
+            if let genre = genres.first(where: { seed in
+                HeroJourney.classicalGenres.contains(where: { seed.title.lowercased().contains($0) })
+            }) {
+                addEffect(.genreScene, title: "\(genre.title) interpretations",
+                          relation: "the same work under different performers",
+                          sources: [genre], confidence: genre.strength)
+            }
+            summary = "Work-first taste; the performer is the discovery. Find the reading that disagrees with the famous one."
 
         case .closedDoorArtist, .humanCuratorThread:
             summary = "\(journey.title) requires enrichment; dormant."

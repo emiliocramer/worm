@@ -171,7 +171,51 @@ enum BrainSeedExtractor {
             ))
         }
 
+        // Devotion seeds: a playlist named after an artist is the loudest
+        // local devotion signal there is (the Deftones -> Team Sleep shape).
+        let artistNames = (topArtistsShort + topArtistsMedium + topArtistsLong).map(\.name)
+        seeds.append(contentsOf: devotionSeeds(
+            playlists: playlists,
+            artistNames: artistNames,
+            node: .spotify,
+            freshness: freshness
+        ))
+
         return seeds
+    }
+
+    /// Playlists whose title IS an artist's name. Matched by normalized
+    /// equality so "MAC MILLER" hits Mac Miller.
+    static func devotionSeeds(
+        playlists: [String],
+        artistNames: [String],
+        node: BrainNodeID,
+        freshness: Date?
+    ) -> [BrainSeed] {
+        let byKey = Dictionary(
+            artistNames.compactMap { name -> (String, String)? in
+                guard let key = BrainNoveltySet.normalized(name), !key.isEmpty else { return nil }
+                return (key, name)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var seen = Set<String>()
+        var seeds: [BrainSeed] = []
+        for playlist in playlists {
+            guard let key = BrainNoveltySet.normalized(playlist), !key.isEmpty,
+                  let artist = byKey[key],
+                  seen.insert(key).inserted else { continue }
+            seeds.append(BrainSeed(
+                sourceNode: node,
+                entityType: .devotion,
+                title: artist,
+                subtitle: "playlist named after the artist",
+                evidence: ["playlist \"\(playlist)\" matches artist \(artist)"],
+                strength: 0.85,
+                freshness: freshness
+            ))
+        }
+        return Array(seeds.prefix(6))
     }
 
     // MARK: - Apple Music
@@ -185,6 +229,8 @@ enum BrainSeedExtractor {
                 .sorted { ($0.playCount ?? 0) > ($1.playCount ?? 0) }
                 .prefix(10)
                 .map { ($0.artist, $0.playCount ?? 0) },
+            playlists: node.playlists.map(\.name),
+            artistNames: node.artists.map(\.name),
             freshness: node.lastSyncedAt
         )
     }
@@ -192,9 +238,17 @@ enum BrainSeedExtractor {
     static func appleMusicSeeds(
         genreNames: [String],
         mostPlayed: [(artist: String, playCount: Int)],
+        playlists: [String] = [],
+        artistNames: [String] = [],
         freshness: Date?
     ) -> [BrainSeed] {
         var seeds: [BrainSeed] = []
+        seeds.append(contentsOf: devotionSeeds(
+            playlists: playlists,
+            artistNames: artistNames + mostPlayed.map(\.artist),
+            node: .appleMusic,
+            freshness: freshness
+        ))
 
         var genreCounts: [String: Int] = [:]
         for genre in genreNames where !genre.isEmpty && genre.lowercased() != "music" {
@@ -295,18 +349,19 @@ enum BrainSeedExtractor {
     static func seeds(for node: PhotosNode) -> [BrainSeed] {
         photosSeeds(
             locationNames: node.albums.flatMap(\.locationNames),
+            albumTitles: node.albums.map(\.title),
             freshness: node.lastSyncedAt
         )
     }
 
-    static func photosSeeds(locationNames: [String], freshness: Date?) -> [BrainSeed] {
+    static func photosSeeds(locationNames: [String], albumTitles: [String] = [], freshness: Date?) -> [BrainSeed] {
         var counts: [String: Int] = [:]
         for name in locationNames {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             counts[trimmed, default: 0] += 1
         }
-        return counts.sorted { $0.value > $1.value }.prefix(6).map { place, count in
+        var seeds: [BrainSeed] = counts.sorted { $0.value > $1.value }.prefix(6).map { place, count in
             BrainSeed(
                 sourceNode: .photos,
                 entityType: .place,
@@ -317,7 +372,64 @@ enum BrainSeedExtractor {
                 freshness: freshness
             )
         }
+
+        // Album titles are how people actually label trips ("Mexxiiicooooo",
+        // "Morocco"). Collapse letter runs and match against real places.
+        var seenPlaces = Set(seeds.map { BrainNoveltySet.normalized($0.title) ?? "" })
+        for title in albumTitles {
+            guard let place = placeName(fromAlbumTitle: title) else { continue }
+            let key = BrainNoveltySet.normalized(place) ?? place
+            guard seenPlaces.insert(key).inserted else { continue }
+            seeds.append(BrainSeed(
+                sourceNode: .photos,
+                entityType: .place,
+                title: place,
+                subtitle: "photo album titled after the place",
+                evidence: ["photo album \"\(title)\" reads as \(place)"],
+                strength: 0.6,
+                freshness: freshness
+            ))
+        }
+        return seeds
     }
+
+    /// "Mexxiiicooooo" -> Mexico. Collapses repeated letters and matches the
+    /// result against a modest list of countries and music-scene cities.
+    /// Deterministic and conservative: no match, no seed.
+    static func placeName(fromAlbumTitle title: String) -> String? {
+        let collapsed = collapseRuns(title)
+        guard collapsed.count >= 4 else { return nil }
+        for place in knownPlaces {
+            if collapsed == collapseRuns(place) {
+                return place
+            }
+        }
+        return nil
+    }
+
+    static func collapseRuns(_ text: String) -> String {
+        var out = ""
+        var last: Character?
+        for char in text.lowercased() where char.isLetter {
+            if char != last { out.append(char) }
+            last = char
+        }
+        return out
+    }
+
+    /// Countries plus cities with named music scenes. Modest on purpose —
+    /// a false place seed is worse than a missed one.
+    static let knownPlaces: [String] = [
+        "Mexico", "Morocco", "Japan", "Korea", "Brazil", "Cuba", "Jamaica",
+        "Nigeria", "Ghana", "Ethiopia", "Colombia", "Argentina", "Peru",
+        "Portugal", "Spain", "France", "Italy", "Germany", "Turkey", "Greece",
+        "India", "Thailand", "Vietnam", "Indonesia", "Iceland", "Ireland",
+        "Scotland", "Canada", "Hawaii", "Paris", "London", "Berlin", "Tokyo",
+        "Kyoto", "Seoul", "Kingston", "Lagos", "Havana", "Oaxaca",
+        "Mexico City", "New Orleans", "Nashville", "Memphis", "Detroit",
+        "Chicago", "Brooklyn", "Manchester", "Bristol", "Lisbon", "Sao Paulo",
+        "Medellin", "Marrakech", "Istanbul", "Mumbai", "Bangkok",
+    ]
 
     // MARK: - Calendar
 

@@ -233,8 +233,19 @@ final class TasteProfile {
                 trace(attempt == 0 ? "Asking the brain (effort \(intent == .musicRecommendation ? "xhigh" : "high"))…" : "Whole list died; asking again with \(rejected.count) rejections…")
                 let query = BrainQuery(text: trimmed, rejectedRecommendations: rejected)
                 var result = try await synthesizer.answer(query, context: context, dig: dig, ledger: ledger)
-                let candidates = result.rankedCandidates
+                var candidates = result.rankedCandidates
                 trace("Model returned \(candidates.count) candidate\(candidates.count == 1 ? "" : "s").")
+
+                // Salvage: the observed judge failure mode is naming picks in
+                // the answer prose while returning an empty array. Pool titles
+                // are verified facts, so matching them against the text is safe.
+                if candidates.isEmpty, let dig, dig.hasPool {
+                    let salvaged = Self.salvageCandidates(fromAnswerText: result.answer, pool: dig.pool)
+                    if !salvaged.isEmpty {
+                        trace("Salvaged \(salvaged.count) pick\(salvaged.count == 1 ? "" : "s") named in the answer text but missing from the recommendations array.")
+                        candidates = salvaged
+                    }
+                }
 
                 if candidates.isEmpty {
                     // Zero candidates against a non-empty verified pool is a model
@@ -341,15 +352,54 @@ final class TasteProfile {
 
     // MARK: - Private
 
+    /// Pool candidates whose artist appears in the answer prose, ordered by
+    /// first mention. Only verified pool entries qualify, so this can never
+    /// introduce an unvetted pick. Exposed for tests.
+    static func salvageCandidates(fromAnswerText text: String, pool: [DugCandidate]) -> [BrainMusicRecommendation] {
+        guard let normalizedText = BrainNoveltySet.normalized(text), !normalizedText.isEmpty else { return [] }
+        let haystack = " \(normalizedText) "
+        var matches: [(position: String.Index, candidate: DugCandidate)] = []
+        var seenArtists = Set<String>()
+        for candidate in pool {
+            guard let artistKey = BrainNoveltySet.normalized(candidate.artist), !artistKey.isEmpty,
+                  seenArtists.insert(artistKey).inserted,
+                  let range = haystack.range(of: " \(artistKey) ") else { continue }
+            matches.append((range.lowerBound, candidate))
+        }
+        return matches
+            .sorted { $0.position < $1.position }
+            .prefix(3)
+            .map { entry in
+                BrainMusicRecommendation(
+                    title: entry.candidate.title,
+                    artist: entry.candidate.artist,
+                    album: entry.candidate.album,
+                    why: entry.candidate.routeReason,
+                    noveltyRationale: "Salvaged from the answer text; verified dig-pool entry."
+                )
+            }
+    }
+
     /// A surfaced pick teaches the dig memory: the winning journey ranks
     /// higher next time, and this expedition's graded leads persist so the
     /// next dig starts from proven ground instead of re-discovering it.
     private func recordDigOutcome(dig: DigResult?, pick: BrainMusicRecommendation) {
         guard let dig else { return }
         var memory = digMemory ?? DigMemorySnapshot()
-        if let match = dig.pool.first(where: { $0.trackKey == BrainNoveltySet.trackKey(title: pick.title, artist: pick.artist) }) {
+        let match = dig.pool.first { $0.trackKey == BrainNoveltySet.trackKey(title: pick.title, artist: pick.artist) }
+        if let match {
             memory.journeyWins[match.journey.rawValue, default: 0] += 1
         }
+        // Variety pressure inputs: the surfaced route and pick both count as
+        // "recent" for the next few pulls, whether on-pool or off-pool.
+        var journeys = memory.recentJourneys ?? []
+        if let journey = match?.journey ?? dig.trails.first?.journey {
+            journeys.append(journey.rawValue)
+        }
+        memory.recentJourneys = Array(journeys.suffix(5))
+        var picks = memory.recentPicks ?? []
+        picks.append("\(pick.title) by \(pick.artist)\(match.map { " (route: \($0.journey.title))" } ?? "")")
+        memory.recentPicks = Array(picks.suffix(5))
         if let leads = dig.leads, !leads.isEmpty {
             var byID = Dictionary(uniqueKeysWithValues: memory.leads.map { ($0.id, $0) })
             for lead in leads where byID[lead.id] == nil {
