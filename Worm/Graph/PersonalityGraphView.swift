@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Navigation routes for each node in the personality graph.
-enum NodeRoute: Hashable {
+enum NodeRoute: Hashable, Codable {
     case profile
     case profileChat
     case graph
