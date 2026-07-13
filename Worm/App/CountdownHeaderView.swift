@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The countdown header pinned at the top of home. Two states, both in the
-/// paper/ink + SF Rounded aesthetic:
-///   • locked: a slim glass capsule ticking down to the next node
-///   • available: the capsule fills to ink and pulses, tap to open
+/// The countdown header pinned at the top of home. Not a toast: a big stacked
+/// title. Two states, both the same shape (an eyebrow word, the "worm food:"
+/// title, then a value line):
+///   • locked: eyebrow "next", value is the clock ticking down to the next node
+///   • available: eyebrow "new", value "ready", tap to open
 /// It reads `NodeProgression` directly (it's @Observable, so reading
 /// `timeRemaining` / `availableUnlock` in the body tracks correctly) and slides
 /// down from offscreen-top on appear. No feed logic lives here.
@@ -27,9 +28,9 @@ struct CountdownHeaderView: View {
 
             Group {
                 if available != nil {
-                    availablePill
+                    availableTitle
                 } else if remaining != nil {
-                    lockedPill(remaining: remaining ?? 0)
+                    lockedTitle(remaining: remaining ?? 0)
                 }
             }
             .offset(y: entered ? 0 : -80)
@@ -58,57 +59,40 @@ struct CountdownHeaderView: View {
 
     // MARK: - Locked (counting down)
 
-    private func lockedPill(remaining: TimeInterval) -> some View {
-        let window = max(1, (progression.state.lastArmDurationHours ?? progression.cooldownIntervalHours) * 3600)
-        let fraction = min(1, max(0, remaining / window))
-
-        return HStack(spacing: 7) {
-            Image(systemName: "hourglass")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ink.opacity(0.5))
-            Text("next node in \(Self.formatted(remaining))")
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(ink.opacity(0.6))
-                .monospacedDigit()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .liquidGlass(in: Capsule())
-        .overlay(alignment: .bottomLeading) {
-            GeometryReader { g in
-                Capsule()
-                    .fill(ink.opacity(0.22))
-                    .frame(width: g.size.width * CGFloat(fraction), height: 2)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-            }
-            .frame(height: 2)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 3)
-        }
+    private func lockedTitle(remaining: TimeInterval) -> some View {
+        titleStack(eyebrow: "next", value: Self.clock(remaining), valueMonospaced: true)
     }
 
     // MARK: - Available (unlocked, tap to open)
 
-    private var availablePill: some View {
+    private var availableTitle: some View {
         Button(action: onOpen) {
-            HStack(spacing: 7) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(paper)
-                Text("a new node unlocked")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(paper)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .background(ink, in: Capsule())
-            .shadow(color: ink.opacity(0.22), radius: 10, y: 4)
+            titleStack(eyebrow: "new", value: "ready", valueMonospaced: false)
         }
         .buttonStyle(.plain)
-        .contentShape(Capsule())
-        .scaleEffect(pulsing ? 1.03 : 1.0)
+        .scaleEffect(pulsing ? 1.035 : 1.0)
         .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
-        .accessibilityLabel("a new node unlocked")
+        .accessibilityLabel("new worm food, ready")
+    }
+
+    // MARK: - Shared stacked title
+
+    /// eyebrow word, the "worm food:" title, then the value (clock or "ready").
+    /// Serif for the words, monospaced for the clock. No background, no icon.
+    private func titleStack(eyebrow: String, value: String, valueMonospaced: Bool) -> some View {
+        VStack(spacing: 2) {
+            Text(eyebrow)
+                .font(.system(size: 15, weight: .semibold, design: .serif))
+                .foregroundStyle(ink.opacity(0.4))
+            Text("worm food:")
+                .font(.system(size: 26, weight: .bold, design: .serif))
+                .foregroundStyle(ink.opacity(0.85))
+            Text(value)
+                .font(.system(size: 40, weight: .heavy, design: valueMonospaced ? .monospaced : .serif))
+                .foregroundStyle(ink.opacity(0.92))
+                .monospacedDigit()
+        }
+        .multilineTextAlignment(.center)
     }
 
     private func startPulse() {
@@ -117,14 +101,13 @@ struct CountdownHeaderView: View {
         DispatchQueue.main.async { pulsing = true }
     }
 
-    /// Compact H/M/S countdown: "4h 12m", "12m 30s", or "48s" under a minute.
-    private static func formatted(_ remaining: TimeInterval) -> String {
+    /// Clock countdown: "05:43" under an hour, "1:05:43" once there are hours.
+    private static func clock(_ remaining: TimeInterval) -> String {
         let total = max(0, Int(remaining.rounded()))
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        if h > 0 { return "\(h)h \(m)m" }
-        if m > 0 { return "\(m)m \(s)s" }
-        return "\(s)s"
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%02d:%02d", m, s)
     }
 }
