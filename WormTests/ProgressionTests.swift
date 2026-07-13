@@ -65,4 +65,32 @@ final class ProgressionTests: XCTestCase {
         for e in NodeCatalog.prompts { XCTAssertEqual(e.brainNodeID, .prompts) }
         for e in NodeCatalog.source { XCTAssertNotEqual(e.brainNodeID, .prompts) }
     }
+
+    @MainActor
+    func test_freshProgression_firstUnlockAvailableImmediately() {
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(), storeFilename: "test-\(UUID().uuidString).json")
+        XCTAssertNotNil(p.availableUnlock)
+        XCTAssertEqual(p.availableUnlock?.id, "apple-music")
+        XCTAssertNil(p.timeRemaining)
+    }
+
+    @MainActor
+    func test_arm_setsFutureDate_andHidesAvailability() {
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
+                                storeFilename: "test-\(UUID().uuidString).json",
+                                now: { clock })
+        p.arm(hours: 24)
+        XCTAssertNil(p.availableUnlock)
+        XCTAssertEqual(p.timeRemaining ?? 0, 24 * 3600, accuracy: 1)
+        clock = clock.addingTimeInterval(24 * 3600 + 1)   // time passes
+        XCTAssertNotNil(p.availableUnlock)
+        XCTAssertNil(p.timeRemaining)
+    }
+}
+
+final class NoopUnlockScheduler: UnlockScheduling {
+    func schedule(at date: Date, title: String, body: String) {}
+    func cancel() {}
+    func requestAuthorizationIfNeeded() async {}
 }
