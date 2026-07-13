@@ -10,6 +10,7 @@ struct WormHomeView: View {
     @Environment(SpotifyMusicNode.self) private var spotify
     @Environment(AppleMusicNode.self) private var appleMusic
     @Environment(TasteProfile.self) private var profile
+    @Environment(NodeProgression.self) private var progression
     @AppStorage private var wormName: String
     @FocusState private var nameFieldFocused: Bool
 
@@ -149,6 +150,20 @@ struct WormHomeView: View {
             }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .overlay(alignment: .top) {
+            if !isNamingFlowActive {
+                CountdownHeaderView(
+                    progression: progression,
+                    ink: ink,
+                    paper: paper,
+                    onOpen: {
+                        Haptics.impact(.medium)
+                        // TODO(Task 9): trigger the unlock morsel
+                    }
+                )
+                .padding(.top, 8)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             NavigationLink(value: NodeRoute.profile) {
                 Image(systemName: "person.crop.circle")
@@ -936,4 +951,5 @@ private extension AnyTransition {
     .environment(CalendarNode())
     .environment(SelfieNode())
     .environment(TasteProfile())
+    .environment(NodeProgression(scheduler: UnlockNotificationScheduler()))
 }
