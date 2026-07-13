@@ -130,6 +130,36 @@ final class ProgressionTests: XCTestCase {
         XCTAssertTrue(p.state.earnedCosmetics.contains(.midnight))
         XCTAssertEqual(p.state.activeCosmetic, .midnight)
     }
+
+    @MainActor
+    func test_promptNode_persistsAnswers_andEmitsSlice() {
+        let node = PromptNode(storeFilename: "test-\(UUID().uuidString).json")
+        node.record(entryID: "latest-book", title: "the last book you read", answer: "Piranesi, Susanna Clarke")
+        let slice = node.brainSlice()
+        XCTAssertNotNil(slice)
+        XCTAssertEqual(slice?.nodeID, .prompts)
+        XCTAssertTrue(slice!.evidence.contains { $0.contains("Piranesi") })
+    }
+
+    @MainActor
+    func test_promptNode_emptyByDefault_noSlice() {
+        let node = PromptNode(storeFilename: "test-\(UUID().uuidString).json")
+        XCTAssertNil(node.brainSlice())
+        XCTAssertFalse(node.hasAnswers)
+    }
+
+    @MainActor
+    func test_promptNode_recordingSameEntryTwice_updatesInPlace() {
+        let file = "test-\(UUID().uuidString).json"
+        let node = PromptNode(storeFilename: file)
+        node.record(entryID: "weekend", title: "what'd you get up to this weekend", answer: "camping")
+        node.record(entryID: "weekend", title: "what'd you get up to this weekend", answer: "beach")
+        XCTAssertEqual(node.answers.count, 1)
+        XCTAssertEqual(node.answers.first?.text, "beach")
+        // Persisted: a fresh instance on the same file sees the latest answer.
+        let reloaded = PromptNode(storeFilename: file)
+        XCTAssertEqual(reloaded.answers.first?.text, "beach")
+    }
 }
 
 final class NoopUnlockScheduler: UnlockScheduling {
