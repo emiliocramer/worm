@@ -33,7 +33,7 @@ struct CountdownHeaderView: View {
                     lockedTitle(remaining: remaining ?? 0)
                 }
             }
-            .offset(y: entered ? 0 : -80)
+            .offset(y: entered ? 100 : -80)
             .opacity(entered ? 1 : 0)
             .onAppear {
                 withAnimation(.spring(response: 0.62, dampingFraction: 0.78)) {
@@ -60,7 +60,7 @@ struct CountdownHeaderView: View {
     // MARK: - Locked (counting down)
 
     private func lockedTitle(remaining: TimeInterval) -> some View {
-        titleStack(eyebrow: "next", value: Self.clock(remaining), valueMonospaced: true)
+        titleStack(eyebrow: "NEXT", value: Self.clock(remaining), valueMonospaced: false)
     }
 
     // MARK: - Available (unlocked, tap to open)
@@ -82,15 +82,16 @@ struct CountdownHeaderView: View {
     private func titleStack(eyebrow: String, value: String, valueMonospaced: Bool) -> some View {
         VStack(spacing: 2) {
             Text(eyebrow)
-                .font(.system(size: 15, weight: .semibold, design: .serif))
-                .foregroundStyle(ink.opacity(0.4))
-            Text("worm food:")
-                .font(.system(size: 26, weight: .bold, design: .serif))
+                .font(.system(size: 36, weight: .semibold, design: .serif))
+                .foregroundStyle(ink.opacity(0.86))
+            Text("WORM FOOD:")
+                .font(.system(size: 36, weight: .bold, design: .serif))
                 .foregroundStyle(ink.opacity(0.85))
-            Text(value)
-                .font(.system(size: 40, weight: .heavy, design: valueMonospaced ? .monospaced : .serif))
-                .foregroundStyle(ink.opacity(0.92))
-                .monospacedDigit()
+            FlickerText(
+                text: value,
+                font: .system(size: 40, weight: .heavy, design: valueMonospaced ? .monospaced : .serif),
+                ink: ink
+            )
         }
         .multilineTextAlignment(.center)
     }
@@ -99,6 +100,32 @@ struct CountdownHeaderView: View {
         // Kick the repeatForever animation on the next runloop so the initial
         // state is registered before it starts oscillating.
         DispatchQueue.main.async { pulsing = true }
+    }
+
+    /// The value line, lit like an old sign: mostly bright, with a light,
+    /// slightly irregular flicker and the odd quick dip. Driven per frame.
+    private struct FlickerText: View {
+        let text: String
+        let font: Font
+        let ink: Color
+
+        var body: some View {
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                Text(text)
+                    .font(font)
+                    .monospacedDigit()
+                    .foregroundStyle(ink.opacity(Self.flicker(at: t)))
+            }
+        }
+
+        static func flicker(at t: Double) -> Double {
+            let wander = 0.5 + 0.5 * sin(t * 2.1)                       // slow drift
+            let shimmer = 0.5 + 0.5 * sin(t * 11.0 + sin(t * 3.0) * 2)  // faster shimmer
+            var o = 0.80 + 0.12 * wander + 0.06 * shimmer              // ~0.80..0.98
+            if sin(t * 6.3) * sin(t * 19.7) > 0.85 { o *= 0.55 }        // occasional quick dip
+            return min(1, max(0.45, o))
+        }
     }
 
     /// Clock countdown: "05:43" under an hour, "1:05:43" once there are hours.
