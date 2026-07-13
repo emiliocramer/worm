@@ -65,9 +65,21 @@ final class NodeProgression {
     }
 
     func arm(hours: Double) {
-        state.nextUnlockAt = now().addingTimeInterval(hours * 3600)
+        let fireDate = now().addingTimeInterval(hours * 3600)
+        state.nextUnlockAt = fireDate
         persist()
-        // notification scheduling wired in Task 6
+        if let entry = nextEntry {
+            let (title, body) = Self.unlockCopy(for: entry)
+            scheduler.schedule(at: fireDate, title: title, body: body)
+        } else {
+            scheduler.cancel()
+        }
+    }
+
+    /// Notification copy for the upcoming unlock. Terse, worm-voiced, em-dash-free.
+    /// Second person, names the thing, never a horoscope.
+    private static func unlockCopy(for entry: NodeCatalogEntry) -> (String, String) {
+        ("your worm's hungry", "it wants \(entry.title).")
     }
 
     // Reward the user just earned; drives the reveal. Records completion + cosmetics.
