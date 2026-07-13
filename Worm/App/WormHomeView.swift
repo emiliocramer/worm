@@ -48,6 +48,9 @@ struct WormHomeView: View {
 
     private let paper = Color(red: 0.97, green: 0.96, blue: 0.93)
     private let ink = Color.black
+
+    private var wormColor: Color { progression.state.activeCosmetic?.wormColor ?? ink }
+    private var wormEyeColor: Color { progression.state.activeCosmetic?.eyeColor ?? paper }
     private let wormEntranceDelay = 0.35
     private let wormEntranceDuration = 2.9
     private let wormEntranceSettleDuration = 0.7
@@ -79,8 +82,8 @@ struct WormHomeView: View {
                         toSize: toSize,
                         entranceDuration: wormEntranceDuration,
                         settleDuration: wormEntranceSettleDuration,
-                        color: ink,
-                        eyeColor: paper
+                        color: wormColor,
+                        eyeColor: wormEyeColor
                     )
                     .allowsHitTesting(false)
                     .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -345,9 +348,10 @@ struct WormHomeView: View {
     /// grammar as onboarding (seed 15pt; selfie+Spotify landed at ~118pt).
     private var earnedSize: OnboardingWormSize {
         let populated = profile.populatedSliceCount
+        let completed = progression.state.completedEntryIDs.count
         return OnboardingWormSize(
-            length: 15 + CGFloat(populated) * 34 + CGFloat(min(profile.insights.count, 6)) * 5,
-            thickness: 16 + CGFloat(min(populated, 8))
+            length: 15 + CGFloat(populated) * 34 + CGFloat(completed) * 22 + CGFloat(min(profile.insights.count, 6)) * 5,
+            thickness: 16 + CGFloat(min(populated + completed, 12))
         )
     }
 
@@ -633,9 +637,8 @@ struct WormHomeView: View {
     /// A successful feed: record the reward, arm the next countdown.
     private func finishUnlock(_ entry: NodeCatalogEntry) {
         let reward = progression.claim(entry: entry)   // records completion; sets activeCosmetic if any
-        if reward.cosmetic != nil {
-            // Task 10 applies the actual worm color; this is just the nod.
-            withAnimation(.easeIn(duration: 0.4)) { digestCaption = "unlocked a new look." }
+        if let cosmetic = reward.cosmetic {
+            withAnimation(.easeIn(duration: 0.4)) { digestCaption = "unlocked: \(cosmetic.displayName)." }
         }
         progression.advance()   // arms the next countdown; header returns to locked
         Task {
