@@ -12,6 +12,10 @@ struct WormApp: App {
     @State private var calendarNode = CalendarNode()
     @State private var selfieNode = SelfieNode()
     @State private var tasteProfile = TasteProfile()
+    @State private var progression = NodeProgression(scheduler: UnlockNotificationScheduler())
+    @State private var promptNode = PromptNode()
+
+    @UIApplicationDelegateAdaptor(WormAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -24,6 +28,8 @@ struct WormApp: App {
                 .environment(calendarNode)
                 .environment(selfieNode)
                 .environment(tasteProfile)
+                .environment(progression)
+                .environment(promptNode)
                 .task {
                     if DevFlags.constantTesting {
                         // Replay the FTUE every launch, but keep every node's
@@ -38,6 +44,7 @@ struct WormApp: App {
                         await photosNode.restoreSessionIfPossible()
                         await calendarNode.restoreSessionIfPossible()
                         await selfieNode.restoreSessionIfPossible()
+                        await promptNode.restoreSessionIfPossible()
                         return
                     }
                     await spotifyNode.restoreSessionIfPossible()
@@ -47,6 +54,7 @@ struct WormApp: App {
                     await photosNode.restoreSessionIfPossible()
                     await calendarNode.restoreSessionIfPossible()
                     await selfieNode.restoreSessionIfPossible()
+                    await promptNode.restoreSessionIfPossible()
                     // The taste profile loads its persisted understanding in its
                     // own init; it re-synthesizes only when a surface asks (first
                     // connect or refresh), never silently on launch.
