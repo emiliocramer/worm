@@ -9,6 +9,11 @@ import UIKit
 struct WormHomeView: View {
     @Environment(SpotifyMusicNode.self) private var spotify
     @Environment(AppleMusicNode.self) private var appleMusic
+    @Environment(YouTubeCultureNode.self) private var youtube
+    @Environment(PhotosNode.self) private var photos
+    @Environment(ContactsNode.self) private var contacts
+    @Environment(CalendarNode.self) private var calendar
+    @Environment(PromptNode.self) private var promptNode
     @Environment(TasteProfile.self) private var profile
     @Environment(NodeProgression.self) private var progression
     @AppStorage private var wormName: String
@@ -27,6 +32,8 @@ struct WormHomeView: View {
     @State private var showFeedHint = false
     /// One quiet line under the worm while he digests a new node.
     @State private var digestCaption: String?
+    /// The prompt-kind entry currently being captured in the sheet, if any.
+    @State private var capturingEntry: NodeCatalogEntry?
     @State private var namingStep: NamingStep = .intro
     @State private var namingHeroVisible = false
     @State private var namingButtonVisible = false
@@ -108,8 +115,8 @@ struct WormHomeView: View {
                         let flight = fed ? morselFlight : 0
                         let bite = Self.smoothstep(0.68, 1, Double(flight))
                         VStack(spacing: 8) {
-                            FeedMorselView(kind: morsel.kind, ink: ink, paper: paper)
-                            Text(morsel.kind.label)
+                            FeedMorselView(entry: morsel.entry, ink: ink, paper: paper)
+                            Text(morsel.entry.title)
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundStyle(ink.opacity(0.4))
                                 .opacity(fed ? 0 : 1)
@@ -158,7 +165,7 @@ struct WormHomeView: View {
                     paper: paper,
                     onOpen: {
                         Haptics.impact(.medium)
-                        // TODO(Task 9): trigger the unlock morsel
+                        Task { await presentNextMorsel() }
                     }
                 )
                 .padding(.top, 8)
@@ -195,6 +202,18 @@ struct WormHomeView: View {
             entranceStart = nil
             nameFieldFocused = false
             keyboardHeight = 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wormUnlockTapped)) { _ in
+            Task { await presentNextMorsel() }
+        }
+        .fullScreenCover(item: $capturingEntry) { entry in
+            PromptCaptureView(
+                entry: entry,
+                ink: ink,
+                paper: paper,
+                onCancel: { cancelCapture() },
+                onSubmit: { value in submitCapture(entry: entry, value: value) }
+            )
         }
     }
 
@@ -335,22 +354,11 @@ struct WormHomeView: View {
     // MARK: - Morsels (food drifts in for whatever he hasn't eaten yet)
 
     private var nextMorsel: FeedMorsel? {
-        if !appleMusicPopulated {
-            return FeedMorsel(kind: .appleMusic, mode: .real)
-        }
-        if DevFlags.DevNodeCreationAllowed {
-            return FeedMorsel(kind: .appleMusic, mode: .devMock)
-        }
-        return nil
-    }
-
-    private var appleMusicPopulated: Bool {
-        appleMusic.isAuthorized || !appleMusic.songs.isEmpty
+        progression.availableUnlock.map(FeedMorsel.init)
     }
 
     private func presentNextMorsel() async {
-        guard hasWormName else { return }
-        guard morselPhase == .offscreen, let next = nextMorsel else { return }
+        guard hasWormName, morselPhase == .offscreen, let next = nextMorsel else { return }
         await MainActor.run {
             morsel = next
             morselFlight = 0
@@ -481,57 +489,93 @@ struct WormHomeView: View {
 
     private func feed(_ morsel: FeedMorsel) {
         guard morselPhase == .hovering else { return }
+        let entry = morsel.entry
         Haptics.impact(.medium)
+
+        switch entry.captureKind {
+        case .source:
+            // A source node: gulp now, then go connect it.
+            gulpAndGrow()
+            Task {
+                await settleGrow()
+                await connectSource(entry)
+            }
+        case .photo, .text, .choice:
+            // A self-report prompt: collect the answer first, swallow it after.
+            withAnimation(.easeOut(duration: 0.2)) { showFeedHint = false }
+            capturingEntry = entry
+        }
+    }
+
+    /// The bite: the morsel flies into the worm's mouth.
+    private func gulpAndGrow() {
         withAnimation(.easeOut(duration: 0.2)) { showFeedHint = false }
         morselFlight = 0
         morselPhase = .fed
         withAnimation(.timingCurve(0.18, 0.84, 0.18, 1, duration: 0.64)) {
             morselFlight = 1
         }
+    }
 
-        Task {
-            try? await Task.sleep(for: .seconds(0.66))
-            await MainActor.run {
-                let grown = OnboardingWormSize(
-                    length: earnedSize.length + 34,
-                    thickness: earnedSize.thickness + 1
-                )
-                fromSize = earnedSize
-                toSize = grown
-                gulpStart = Date().timeIntervalSinceReferenceDate
-                Haptics.impact(.heavy)
-                withAnimation(.easeOut(duration: 0.18)) { morselPhase = .gone }
-            }
-
-            switch morsel.kind {
-            case .appleMusic:
-                await connectAppleMusic(mock: morsel.mode == .devMock)
-            }
+    /// After the bite lands, the worm swallows and grows a notch.
+    private func settleGrow() async {
+        try? await Task.sleep(for: .seconds(0.66))
+        await MainActor.run {
+            let grown = OnboardingWormSize(
+                length: earnedSize.length + 34,
+                thickness: earnedSize.thickness + 1
+            )
+            fromSize = earnedSize
+            toSize = grown
+            gulpStart = Date().timeIntervalSinceReferenceDate
+            Haptics.impact(.heavy)
+            withAnimation(.easeOut(duration: 0.18)) { morselPhase = .gone }
         }
     }
 
-    private func connectAppleMusic(mock: Bool) async {
+    // MARK: - Prompt capture
+
+    /// User backed out of the sheet: the morsel returns to hover, uneaten and
+    /// un-advanced.
+    private func cancelCapture() {
+        capturingEntry = nil
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+            morselPhase = .hovering
+        }
+    }
+
+    /// User answered the prompt: record it, then run the gulp + reward.
+    private func submitCapture(entry: NodeCatalogEntry, value: PromptCaptureValue) {
+        capturingEntry = nil
+        switch value {
+        case .text(let str):
+            promptNode.record(entryID: entry.id, title: entry.title, answer: str)
+        case .photo:
+            // v1: vision keywords TODO, a real on-device read comes later.
+            promptNode.recordPhoto(entryID: entry.id, title: entry.title, visionKeywords: [])
+        }
+        gulpAndGrow()
+        Task {
+            await settleGrow()
+            await MainActor.run { finishUnlock(entry) }
+        }
+    }
+
+    // MARK: - Source connect
+
+    private func connectSource(_ entry: NodeCatalogEntry) async {
         await MainActor.run {
-            withAnimation(.easeIn(duration: 0.5)) { digestCaption = "eating your Apple Music…" }
+            withAnimation(.easeIn(duration: 0.5)) { digestCaption = "eating \(entry.title)..." }
         }
-        if mock {
-            try? await Task.sleep(for: .seconds(1.25))
+        if await connectNode(for: entry.sourceRoute) {
             await MainActor.run {
                 Haptics.success()
                 withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
-            }
-            return
-        }
-        await appleMusic.connect()
-        if appleMusic.isAuthorized {
-            await appleMusic.syncEverything()
-            await MainActor.run {
-                Haptics.success()
-                withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
+                finishUnlock(entry)
             }
         } else {
-            // Denied or failed: he spits nothing back out — the size settles
-            // where it was, and the ask returns another day.
+            // Denied or failed: he spits nothing back out, the size settles
+            // where it was, and the ask returns another day. No claim, no advance.
             await MainActor.run {
                 fromSize = earnedSize
                 toSize = earnedSize
@@ -539,6 +583,63 @@ struct WormHomeView: View {
                 withAnimation(.easeInOut(duration: 0.5)) { digestCaption = "maybe later." }
             }
             try? await Task.sleep(for: .seconds(1.8))
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
+            }
+        }
+    }
+
+    /// Drive the source node matching this route through connect + sync. Returns
+    /// whether it ended up authorized.
+    private func connectNode(for route: NodeRoute?) async -> Bool {
+        switch route {
+        case .appleMusic:
+            await appleMusic.connect()
+            guard appleMusic.isAuthorized else { return false }
+            await appleMusic.syncEverything()
+            return true
+        case .youtube:
+            await youtube.connect()
+            guard youtube.isAuthorized else { return false }
+            await youtube.syncEverything()
+            return true
+        case .photos:
+            await photos.connect()
+            guard photos.isAuthorized else { return false }
+            await photos.syncEverything()
+            return true
+        case .contacts:
+            await contacts.connect()
+            guard contacts.isAuthorized else { return false }
+            await contacts.syncEverything()
+            return true
+        case .calendar:
+            await calendar.connect()
+            guard calendar.isAuthorized else { return false }
+            await calendar.syncEverything()
+            return true
+        case .spotify:
+            await spotify.connect()
+            guard spotify.isAuthorized else { return false }
+            await spotify.syncEverything()
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: - Reward
+
+    /// A successful feed: record the reward, arm the next countdown.
+    private func finishUnlock(_ entry: NodeCatalogEntry) {
+        let reward = progression.claim(entry: entry)   // records completion; sets activeCosmetic if any
+        if reward.cosmetic != nil {
+            // Task 10 applies the actual worm color; this is just the nod.
+            withAnimation(.easeIn(duration: 0.4)) { digestCaption = "unlocked a new look." }
+        }
+        progression.advance()   // arms the next countdown; header returns to locked
+        Task {
+            try? await Task.sleep(for: .seconds(1.6))
             await MainActor.run {
                 withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
             }
@@ -830,36 +931,14 @@ private struct HomeWormNameTag: View {
 // MARK: - Morsels
 
 struct FeedMorsel: Identifiable, Equatable {
-    enum Mode {
-        case real
-        case devMock
-    }
-
-    enum Kind {
-        case appleMusic
-
-        var label: String {
-            switch self {
-            case .appleMusic: return "Apple Music"
-            }
-        }
-
-        var glyph: String {
-            switch self {
-            case .appleMusic: return "music.note"
-            }
-        }
-    }
-
-    let kind: Kind
-    let mode: Mode
-    var id: String { "\(kind.label)-\(mode)" }
+    let entry: NodeCatalogEntry
+    var id: String { entry.id }
 }
 
 /// The food. Same ink-circle grammar as the onboarding's music morsel, so
 /// "tap this and he eats it" is a lesson the user already learned.
 private struct FeedMorselView: View {
-    let kind: FeedMorsel.Kind
+    let entry: NodeCatalogEntry
     let ink: Color
     let paper: Color
 
@@ -871,7 +950,7 @@ private struct FeedMorselView: View {
             Circle()
                 .stroke(paper.opacity(0.35), lineWidth: 1.5)
                 .frame(width: 42, height: 42)
-            Image(systemName: kind.glyph)
+            Image(systemName: entry.glyph)
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(paper)
         }
@@ -950,6 +1029,7 @@ private extension AnyTransition {
     .environment(PhotosNode())
     .environment(CalendarNode())
     .environment(SelfieNode())
+    .environment(PromptNode())
     .environment(TasteProfile())
     .environment(NodeProgression(scheduler: UnlockNotificationScheduler()))
 }
