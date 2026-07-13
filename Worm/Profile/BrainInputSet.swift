@@ -14,6 +14,7 @@ struct BrainInputSet {
     let photos: PhotosNode
     let calendar: CalendarNode
     let selfie: SelfieNode
+    let prompts: PromptNode
 
     func context(read: String?, insights: [Insight]) -> BrainContext {
         BrainSliceBuilder.context(
@@ -24,6 +25,7 @@ struct BrainInputSet {
             photos: photos,
             calendar: calendar,
             selfie: selfie,
+            prompts: prompts,
             read: read,
             insights: insights
         )

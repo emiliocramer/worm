@@ -10,6 +10,7 @@ struct ProfileView: View {
     @Environment(PhotosNode.self) private var photos
     @Environment(CalendarNode.self) private var calendar
     @Environment(SelfieNode.self) private var selfie
+    @Environment(PromptNode.self) private var promptNode
     @Environment(TasteProfile.self) private var profile
 
     @State private var isSimulatingFirstInsight = false
@@ -445,7 +446,8 @@ struct ProfileView: View {
             contacts: contacts,
             photos: photos,
             calendar: calendar,
-            selfie: selfie
+            selfie: selfie,
+            prompts: promptNode
         )
     }
 
