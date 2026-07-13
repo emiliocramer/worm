@@ -87,6 +87,49 @@ final class ProgressionTests: XCTestCase {
         XCTAssertNotNil(p.availableUnlock)
         XCTAssertNil(p.timeRemaining)
     }
+
+    @MainActor
+    func test_claimThenAdvance_movesCursor_recordsCompletion_armsNext() {
+        var clock = Date(timeIntervalSince1970: 2_000_000)
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
+                                storeFilename: "test-\(UUID().uuidString).json", now: { clock })
+        let first = p.availableUnlock!            // apple-music
+        let reward = p.claim(entry: first)        // returns the StepReward for the reveal
+        XCTAssertTrue(reward.insight)
+        XCTAssertTrue(p.state.completedEntryIDs.contains("apple-music"))
+        p.advance()
+        XCTAssertEqual(p.state.cursor, 1)
+        XCTAssertNil(p.availableUnlock)           // next is armed, not yet ready
+        clock = clock.addingTimeInterval(24 * 3600 + 1)
+        XCTAssertEqual(p.availableUnlock?.id, "fit-photo")
+    }
+
+    @MainActor
+    func test_advancingPastLastStep_flipsToCooldown() {
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
+                                storeFilename: "test-\(UUID().uuidString).json",
+                                now: { Date(timeIntervalSince1970: 0) })
+        for entry in NodeCatalog.firstRunSchedule.map(\.entryID) {
+            p.forceUnlockNow()
+            _ = p.claim(entry: NodeCatalog.entry(entry)!)
+            p.advance()
+        }
+        XCTAssertEqual(p.state.mode, .cooldown)
+        p.forceUnlockNow()
+        XCTAssertNotNil(p.availableUnlock)        // cooldown keeps offering
+        XCTAssertTrue(NodeCatalog.cooldownPool.contains { $0.id == p.availableUnlock?.id })
+    }
+
+    @MainActor
+    func test_cosmeticReward_isRecordedAndActivated() {
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
+                                storeFilename: "test-\(UUID().uuidString).json",
+                                now: { Date(timeIntervalSince1970: 0) })
+        p.forceUnlockNow(); _ = p.claim(entry: NodeCatalog.entry("apple-music")!); p.advance()
+        p.forceUnlockNow(); _ = p.claim(entry: NodeCatalog.entry("fit-photo")!)  // reward has .midnight
+        XCTAssertTrue(p.state.earnedCosmetics.contains(.midnight))
+        XCTAssertEqual(p.state.activeCosmetic, .midnight)
+    }
 }
 
 final class NoopUnlockScheduler: UnlockScheduling {

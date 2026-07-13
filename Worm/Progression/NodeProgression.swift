@@ -24,6 +24,8 @@ final class NodeProgression {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var schedule: [ScheduleStep] { NodeCatalog.firstRunSchedule }
 
+    var cooldownIntervalHours: Double = 24
+
     init(scheduler: UnlockScheduling,
          storeFilename: String = "node-progression.json",
          now: @escaping () -> Date = Date.init) {
@@ -67,6 +69,51 @@ final class NodeProgression {
         persist()
         // notification scheduling wired in Task 6
     }
+
+    // Reward the user just earned; drives the reveal. Records completion + cosmetics.
+    @discardableResult
+    func claim(entry: NodeCatalogEntry) -> StepReward {
+        let reward = currentReward(for: entry)
+        if !state.completedEntryIDs.contains(entry.id) {
+            state.completedEntryIDs.append(entry.id)
+        }
+        if let cosmetic = reward.cosmetic {
+            if !state.earnedCosmetics.contains(cosmetic) { state.earnedCosmetics.append(cosmetic) }
+            state.activeCosmetic = cosmetic
+        }
+        state.pendingUnlockEntryID = nil
+        persist()
+        return reward
+    }
+
+    func advance() {
+        switch state.mode {
+        case .drip:
+            state.cursor += 1
+            if state.cursor >= schedule.count { state.mode = .cooldown }
+            arm(hours: currentInterval)
+        case .cooldown:
+            arm(hours: cooldownIntervalHours)
+        }
+    }
+
+    private func currentReward(for entry: NodeCatalogEntry) -> StepReward {
+        if state.mode == .drip, state.cursor < schedule.count,
+           schedule[state.cursor].entryID == entry.id {
+            return schedule[state.cursor].reward
+        }
+        return StepReward(insight: true, cosmetic: nil)   // cooldown default
+    }
+
+    private var currentInterval: Double {
+        guard state.mode == .drip, state.cursor < schedule.count else { return cooldownIntervalHours }
+        return schedule[state.cursor].intervalHours
+    }
+
+    // MARK: - Dev / test helpers
+    func forceUnlockNow() { state.nextUnlockAt = nil; scheduler.cancel(); persist() }
+    func reset() { state = ProgressionState(); scheduler.cancel(); persist() }
+    func jumpToCooldown() { state.mode = .cooldown; state.cursor = schedule.count; persist() }
 
     private func persist() { store.save(state) }
 }
