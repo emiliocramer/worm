@@ -12,15 +12,20 @@ struct ProfileView: View {
     @Environment(SelfieNode.self) private var selfie
     @Environment(PromptNode.self) private var promptNode
     @Environment(TasteProfile.self) private var profile
+    @Environment(NodeProgression.self) private var progression
 
     @State private var isSimulatingFirstInsight = false
     @State private var simulatedFirstInsight: Insight?
     @State private var isReplayingOnboarding = false
+    @State private var devScheduler = UnlockNotificationScheduler()
 
     var body: some View {
         List {
             graphHealthSection
             brainSection
+            if DevFlags.showProgressionDevPanel {
+                progressionDevSection
+            }
             nodesSection
         }
         .navigationTitle("Profile")
@@ -101,8 +106,145 @@ struct ProfileView: View {
         }
     }
 
+    // MARK: - Progression Dev Panel
+
+    private var progressionDevSection: some View {
+        Section {
+            metric("cursor", "\(progression.state.cursor)")
+            metric("mode", progression.state.mode.rawValue)
+            metric("next unlock", nextUnlockReadout)
+            metric("completed", "\(progression.state.completedEntryIDs.count)")
+            metric("active cosmetic", progression.state.activeCosmetic?.displayName ?? "none")
+            metric("earned", earnedReadout)
+
+            Button {
+                Haptics.impact(.light)
+                progression.forceUnlockNow()
+            } label: {
+                Label("Unlock now", systemImage: "lock.open")
+            }
+            Button {
+                Haptics.impact(.light)
+                progression.advance()
+            } label: {
+                Label("Advance step", systemImage: "forward")
+            }
+            Button {
+                Haptics.impact(.light)
+                progression.reset()
+            } label: {
+                Label("Reset progression", systemImage: "arrow.counterclockwise")
+            }
+            Button {
+                Haptics.impact(.light)
+                progression.jumpToCooldown()
+            } label: {
+                Label("Jump to cooldown", systemImage: "hourglass")
+            }
+            Button {
+                Haptics.impact(.light)
+                Task {
+                    await devScheduler.requestAuthorizationIfNeeded()
+                    devScheduler.schedule(
+                        at: Date().addingTimeInterval(5),
+                        title: "your worm's hungry",
+                        body: "test notification."
+                    )
+                }
+            } label: {
+                Label("Fire test notification (5s)", systemImage: "bell")
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Fast-forward next arm")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    fastForwardButton("real", nil)
+                    fastForwardButton("10s", 10.0 / 3600.0)
+                    fastForwardButton("60s", 60.0 / 3600.0)
+                }
+            }
+            .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Preview cosmetic")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        cosmeticButton("none", nil)
+                        ForEach(CosmeticID.allCases, id: \.self) { id in
+                            cosmeticButton(id.displayName, id)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        } header: {
+            Text("Progression (dev)")
+        } footer: {
+            Text("Fast-forward sets the interval used by the next advance. Cosmetic preview reskins the worm on home.")
+        }
+    }
+
+    private var nextUnlockReadout: String {
+        if let entry = progression.availableUnlock { return entry.id }
+        if let remaining = progression.timeRemaining {
+            return formattedInterval(remaining)
+        }
+        return "none"
+    }
+
+    private var earnedReadout: String {
+        let names = progression.state.earnedCosmetics.map(\.displayName)
+        return names.isEmpty ? "none" : names.joined(separator: ", ")
+    }
+
+    private func formattedInterval(_ interval: TimeInterval) -> String {
+        let total = Int(interval.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if minutes > 0 { return "\(minutes)m \(seconds)s" }
+        return "\(seconds)s"
+    }
+
+    private func fastForwardButton(_ title: String, _ hours: Double?) -> some View {
+        let isSelected = progression.devIntervalOverrideHours == hours
+        return Button {
+            Haptics.impact(.light)
+            progression.devIntervalOverrideHours = hours
+        } label: {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background((isSelected ? Color.accentColor : Color.secondary).opacity(isSelected ? 0.22 : 0.12), in: Capsule())
+                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+        }
+        .buttonStyle(.borderless)
+    }
+
+    private func cosmeticButton(_ title: String, _ id: CosmeticID?) -> some View {
+        let isSelected = progression.state.activeCosmetic == id
+        return Button {
+            Haptics.impact(.light)
+            progression.applyCosmetic(id)
+        } label: {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background((isSelected ? Color.accentColor : Color.secondary).opacity(isSelected ? 0.22 : 0.12), in: Capsule())
+                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+        }
+        .buttonStyle(.borderless)
+    }
+
     private var nodesSection: some View {
-        Section("Nodes") {
+        Section {
             nodeRow(
                 title: "Spotify",
                 symbol: "music.note",
@@ -238,6 +380,10 @@ struct ProfileView: View {
                 },
                 refresh: { await selfie.syncEverything() }
             )
+        } header: {
+            Text("Nodes")
+        } footer: {
+            Text("Add any source here anytime; the daily unlock is just the nudge.")
         }
     }
 
@@ -534,4 +680,5 @@ private struct OnboardingReplayDemo: View {
     .environment(CalendarNode())
     .environment(SelfieNode())
     .environment(TasteProfile())
+    .environment(NodeProgression(scheduler: UnlockNotificationScheduler()))
 }

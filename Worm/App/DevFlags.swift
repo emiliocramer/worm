@@ -16,6 +16,11 @@ enum DevFlags {
     /// reconnects. Flip to `false` for normal app routing.
     static let constantTesting = false
 
+    /// Shows the progression control panel in Profile: live readout, unlock/advance/
+    /// reset/cooldown buttons, fast-forward intervals, and a cosmetic preview picker.
+    /// For testing the whole unlock loop without waiting real hours.
+    static let showProgressionDevPanel = true
+
     /// Clears the onboarding/name flags so the first-time experience shows again.
     /// (Node snapshots/tokens are cleared via each node's `disconnect()`.)
     static func resetOnboarding() {

@@ -26,6 +26,10 @@ final class NodeProgression {
 
     var cooldownIntervalHours: Double = 24
 
+    /// Dev-only: when set, arming uses this instead of the schedule/cooldown interval,
+    /// so the countdown can be watched in seconds. nil = normal authored intervals.
+    var devIntervalOverrideHours: Double? = nil
+
     init(scheduler: UnlockScheduling,
          storeFilename: String = "node-progression.json",
          now: @escaping () -> Date = Date.init) {
@@ -103,9 +107,9 @@ final class NodeProgression {
         case .drip:
             state.cursor += 1
             if state.cursor >= schedule.count { state.mode = .cooldown }
-            arm(hours: currentInterval)
+            arm(hours: devIntervalOverrideHours ?? currentInterval)
         case .cooldown:
-            arm(hours: cooldownIntervalHours)
+            arm(hours: devIntervalOverrideHours ?? cooldownIntervalHours)
         }
     }
 
@@ -126,6 +130,12 @@ final class NodeProgression {
     func forceUnlockNow() { state.nextUnlockAt = nil; scheduler.cancel(); persist() }
     func reset() { state = ProgressionState(); scheduler.cancel(); persist() }
     func jumpToCooldown() { state.mode = .cooldown; state.cursor = schedule.count; persist() }
+
+    /// Dev-only: preview/apply a cosmetic directly.
+    func applyCosmetic(_ id: CosmeticID?) {
+        state.activeCosmetic = id
+        persist()
+    }
 
     private func persist() { store.save(state) }
 }
