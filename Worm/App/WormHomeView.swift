@@ -17,6 +17,7 @@ struct WormHomeView: View {
     @Environment(TasteProfile.self) private var profile
     @Environment(NodeProgression.self) private var progression
     @AppStorage private var wormName: String
+    @AppStorage("worm.askedNotificationPermission") private var askedNotificationPermission = false
     @FocusState private var nameFieldFocused: Bool
 
     /// Entrance clock: nil until this appearance's crawl begins.
@@ -590,6 +591,14 @@ struct WormHomeView: View {
             await MainActor.run {
                 withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
             }
+            // No claim, no advance: the unlock is still available. Reset the
+            // morsel phase (it's stuck at .gone) so the header pill tap, the
+            // notification, or this re-present all work again for a retry.
+            await MainActor.run {
+                morsel = nil
+                morselPhase = .offscreen
+            }
+            await presentNextMorsel()
         }
     }
 
@@ -641,11 +650,29 @@ struct WormHomeView: View {
             withAnimation(.easeIn(duration: 0.4)) { digestCaption = "unlocked: \(cosmetic.displayName)." }
         }
         progression.advance()   // arms the next countdown; header returns to locked
+
+        // The first countdown just armed: ask for notification permission once,
+        // contextually, on the REAL scheduler (never at launch).
+        if !askedNotificationPermission {
+            askedNotificationPermission = true
+            Task { await progression.requestNotificationPermission() }
+        }
+
+        // The morsel finished its .hovering -> .fed -> .gone arc. Reset it so a
+        // fresh unlock (short intervals / cooldown) can be presented this session
+        // without waiting for a home re-appear.
+        morsel = nil
+        morselPhase = .offscreen
+
         Task {
             try? await Task.sleep(for: .seconds(1.6))
             await MainActor.run {
                 withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
             }
+            // advance() re-armed a future countdown, so availableUnlock is
+            // normally nil and this is a harmless no-op; call it in case a next
+            // unlock is already available.
+            await presentNextMorsel()
         }
     }
 

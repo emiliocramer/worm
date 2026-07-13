@@ -45,4 +45,8 @@ struct ProgressionState: Codable, Hashable {
     // Array (not Set) to keep earned order stable for display.
     var earnedCosmetics: [CosmeticID] = []
     var activeCosmetic: CosmeticID? = nil
+    // The duration (hours) of the most recently armed countdown, so the header
+    // can size its progress track against the actual window (drip/dev intervals
+    // differ from the cooldown default).
+    var lastArmDurationHours: Double? = nil
 }

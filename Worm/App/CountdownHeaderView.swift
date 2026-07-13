@@ -15,64 +15,75 @@ struct CountdownHeaderView: View {
 
     @State private var entered = false
     @State private var pulsing = false
+    @State private var lastAvailableID: String?
 
     var body: some View {
-        Group {
-            if progression.availableUnlock != nil {
-                availablePill
-            } else if progression.timeRemaining != nil {
-                lockedPill
+        // Drive the WHOLE view off a 1-second tick so the outer locked ->
+        // available branch re-evaluates as wall-clock time passes (both
+        // `availableUnlock` and `timeRemaining` read a non-observable clock).
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            let available = progression.availableUnlock
+            let remaining = progression.timeRemaining
+
+            Group {
+                if available != nil {
+                    availablePill
+                } else if remaining != nil {
+                    lockedPill(remaining: remaining ?? 0)
+                }
             }
-        }
-        .offset(y: entered ? 0 : -80)
-        .opacity(entered ? 1 : 0)
-        .onAppear {
-            withAnimation(.spring(response: 0.62, dampingFraction: 0.78)) {
-                entered = true
+            .offset(y: entered ? 0 : -80)
+            .opacity(entered ? 1 : 0)
+            .onAppear {
+                withAnimation(.spring(response: 0.62, dampingFraction: 0.78)) {
+                    entered = true
+                }
+                if available != nil {
+                    lastAvailableID = available?.id
+                    startPulse()
+                }
             }
-            if progression.availableUnlock != nil { startPulse() }
-        }
-        .onChange(of: progression.availableUnlock?.id) { _, newValue in
-            if newValue != nil {
-                Haptics.impact(.medium)
-                startPulse()
-            } else {
-                pulsing = false
+            .onChange(of: available?.id) { _, newValue in
+                // Fire the haptic once, the tick it first becomes available.
+                if newValue != nil, newValue != lastAvailableID {
+                    Haptics.impact(.medium)
+                    startPulse()
+                } else if newValue == nil {
+                    pulsing = false
+                }
+                lastAvailableID = newValue
             }
         }
     }
 
     // MARK: - Locked (counting down)
 
-    private var lockedPill: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            let remaining = progression.timeRemaining ?? 0
-            let window = max(1, progression.cooldownIntervalHours * 3600)
-            let fraction = min(1, max(0, remaining / window))
+    private func lockedPill(remaining: TimeInterval) -> some View {
+        let window = max(1, (progression.state.lastArmDurationHours ?? progression.cooldownIntervalHours) * 3600)
+        let fraction = min(1, max(0, remaining / window))
 
-            HStack(spacing: 7) {
-                Image(systemName: "hourglass")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ink.opacity(0.5))
-                Text("next node in \(Self.formatted(remaining))")
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(ink.opacity(0.6))
-                    .monospacedDigit()
+        return HStack(spacing: 7) {
+            Image(systemName: "hourglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ink.opacity(0.5))
+            Text("next node in \(Self.formatted(remaining))")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.6))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .liquidGlass(in: Capsule())
+        .overlay(alignment: .bottomLeading) {
+            GeometryReader { g in
+                Capsule()
+                    .fill(ink.opacity(0.22))
+                    .frame(width: g.size.width * CGFloat(fraction), height: 2)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .liquidGlass(in: Capsule())
-            .overlay(alignment: .bottomLeading) {
-                GeometryReader { g in
-                    Capsule()
-                        .fill(ink.opacity(0.22))
-                        .frame(width: g.size.width * CGFloat(fraction), height: 2)
-                        .frame(maxHeight: .infinity, alignment: .bottom)
-                }
-                .frame(height: 2)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 3)
-            }
+            .frame(height: 2)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 3)
         }
     }
 

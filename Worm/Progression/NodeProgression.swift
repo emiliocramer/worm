@@ -68,9 +68,15 @@ final class NodeProgression {
         }
     }
 
+    /// Ask for notification permission on the real scheduler. Call once, contextually.
+    func requestNotificationPermission() async {
+        await scheduler.requestAuthorizationIfNeeded()
+    }
+
     func arm(hours: Double) {
         let fireDate = now().addingTimeInterval(hours * 3600)
         state.nextUnlockAt = fireDate
+        state.lastArmDurationHours = hours
         persist()
         if let entry = nextEntry {
             let (title, body) = Self.unlockCopy(for: entry)
