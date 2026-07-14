@@ -579,6 +579,15 @@ final class AppleMusicNode {
     }
 
     func connect() async {
+        if await requestAccess() { await syncEverything() }
+    }
+
+    /// Request Apple Music authorization only, without the follow-on sync.
+    /// Returns whether the node ended up authorized. The feed flow uses this so
+    /// the heavy sync can run in the background instead of blocking the UI;
+    /// `connect()` = this + `syncEverything()`.
+    @discardableResult
+    func requestAccess() async -> Bool {
         lastErrorMessage = nil
         isAuthorizing = true
         let status = await MusicAuthorization.request()
@@ -588,7 +597,7 @@ final class AppleMusicNode {
         switch status {
         case .authorized:
             isAuthorized = true
-            await syncEverything()
+            return true
         case .denied:
             lastErrorMessage = "Apple Music access was denied. Enable it in Settings › Privacy › Media & Apple Music."
         case .restricted:
@@ -598,6 +607,7 @@ final class AppleMusicNode {
         @unknown default:
             lastErrorMessage = "Unknown Apple Music authorization status."
         }
+        return false
     }
 
     /// MusicKit authorization can only be revoked from iOS Settings, so this

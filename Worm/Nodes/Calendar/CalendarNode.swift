@@ -372,6 +372,15 @@ final class CalendarNode {
     }
 
     func connect() async {
+        if await requestAccess() { await syncEverything() }
+    }
+
+    /// Request calendar/reminders authorization only, without the follow-on
+    /// sync. Returns whether the node ended up authorized. The feed flow uses
+    /// this so the heavy sync can run in the background instead of blocking the
+    /// UI; `connect()` = this + `syncEverything()`.
+    @discardableResult
+    func requestAccess() async -> Bool {
         lastErrorMessage = nil
         isAuthorizing = true
         defer { isAuthorizing = false }
@@ -388,19 +397,15 @@ final class CalendarNode {
             updateAuthorizationStatus()
 
             isAuthorized = hasEventAccess || hasReminderAccess
-            if isAuthorized {
-                await syncEverything()
-            } else {
+            if !isAuthorized {
                 lastErrorMessage = "Calendar and Reminders access was not granted."
             }
         } catch {
             updateAuthorizationStatus()
             isAuthorized = hasEventAccess || hasReminderAccess
             lastErrorMessage = error.localizedDescription
-            if isAuthorized {
-                await syncEverything()
-            }
         }
+        return isAuthorized
     }
 
     /// Calendar/Reminders authorization can only be revoked from Settings, so

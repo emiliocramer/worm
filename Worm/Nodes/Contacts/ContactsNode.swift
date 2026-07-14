@@ -357,6 +357,15 @@ final class ContactsNode {
     }
 
     func connect() async {
+        if await requestAccess() { await syncEverything() }
+    }
+
+    /// Request contacts authorization only, without the follow-on sync. Returns
+    /// whether the node ended up authorized. The feed flow uses this so the
+    /// heavy sync can run in the background instead of blocking the UI;
+    /// `connect()` = this + `syncEverything()`.
+    @discardableResult
+    func requestAccess() async -> Bool {
         lastErrorMessage = nil
         isAuthorizing = true
         let granted: Bool
@@ -370,11 +379,10 @@ final class ContactsNode {
         updateAuthorizationStatus()
         isAuthorized = granted || hasContactAccess
 
-        if isAuthorized {
-            await syncEverything()
-        } else if lastErrorMessage == nil {
+        if !isAuthorized, lastErrorMessage == nil {
             lastErrorMessage = "Contacts access was denied. Enable it in Settings > Privacy & Security > Contacts."
         }
+        return isAuthorized
     }
 
     func disconnect() {

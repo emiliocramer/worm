@@ -517,6 +517,16 @@ final class SpotifyMusicNode {
         await connect(allowStoredSessionReuse: true, syncAfterAuthorization: true)
     }
 
+    /// Authorize only (reusing a stored session when possible), without the
+    /// follow-on sync. Returns whether the node ended up authorized. The feed
+    /// flow uses this so the heavy sync can run in the background instead of
+    /// blocking the UI; `connect()` = this + `syncEverything()`.
+    @discardableResult
+    func requestAccess() async -> Bool {
+        await connect(allowStoredSessionReuse: true, syncAfterAuthorization: false)
+        return isAuthorized
+    }
+
     /// Onboarding is a consent moment, not a restore moment. Force a real OAuth
     /// pass so stale keychain tokens or thin cached snapshots cannot satisfy the
     /// first-time experience.
