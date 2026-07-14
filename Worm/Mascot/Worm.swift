@@ -51,6 +51,18 @@ struct Worm {
         gaitStepiness: 0.06,
         gaitDrift: 0.02
     )
+
+    /// A short disturbance that travels away from one point on the body. The
+    /// home worm uses these for touch reactions, so they deform the same
+    /// centerline as the rest of the mascot's motion.
+    struct Wiggle: Identifiable {
+        let id = UUID()
+        let startedAt: Double
+        /// Position along the body: 0 is tail, 1 is head.
+        let origin: Double
+        /// Caller-controlled, bounded excitement multiplier.
+        let strength: Double
+    }
 }
 
 extension Worm {
@@ -61,7 +73,8 @@ extension Worm {
         in context: GraphicsContext,
         centerline raw: [CGPoint],
         time: Double,
-        gaitWeights: [Double]? = nil
+        gaitWeights: [Double]? = nil,
+        wiggles: [Wiggle] = []
     ) {
         let pts = Self.smoothed(raw, passes: 2)
         let n = pts.count
@@ -124,6 +137,23 @@ extension Worm {
                 x += -nx * lift
                 y += -ny * lift
             }
+
+            // Twin, single-lobe wavefronts start at the touch point and travel
+            // toward both the head and tail. Cap their sum so a tap barrage
+            // stays juicy without pulling the body apart.
+            var ripple = 0.0
+            for wiggle in wiggles {
+                let age = time - wiggle.startedAt
+                guard age >= 0, age < 0.62 else { continue }
+                let distance = abs(localU - wiggle.origin)
+                let front = age * 1.55
+                let width = 0.12 + age * 0.04
+                let envelope = exp(-pow((distance - front) / width, 2))
+                ripple += envelope * wiggle.strength
+            }
+            ripple = min(ripple, 1.2)
+            x += nx * ripple * Double(thickness) * 0.42 * endTaper * straight
+            y += ny * ripple * Double(thickness) * 0.42 * endTaper * straight
 
             line.append(CGPoint(x: x, y: y))
         }
