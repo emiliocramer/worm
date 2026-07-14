@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// The user's profile surface: node population, graph health, and the controls
 /// needed to connect or populate sources that have not been filled yet.
@@ -19,19 +20,38 @@ struct ProfileView: View {
     @State private var isReplayingOnboarding = false
     @State private var devScheduler = UnlockNotificationScheduler()
 
+    // Food-visual customization: tap a node's apple to pick its emblem.
+    @State private var foodStore = FoodVisualStore.shared
+    @State private var editingFoodID: String?
+    @State private var showFoodPicker = false
+    @State private var pickedFoodItem: PhotosPickerItem?
+
     var body: some View {
         List {
             graphHealthSection
+            journeySection
             brainSection
             if DevFlags.showProgressionDevPanel {
                 progressionDevSection
             }
+            foodVisualsSection
             nodesSection
         }
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             refreshBrainSlices()
+        }
+        .photosPicker(isPresented: $showFoodPicker, selection: $pickedFoodItem, matching: .images)
+        .onChange(of: pickedFoodItem) { _, item in
+            guard let item, let id = editingFoodID else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let image = UIImage(data: data) {
+                    foodStore.setImage(image, for: id)
+                }
+                pickedFoodItem = nil
+            }
         }
         // The exact first-run flow, replayed: the Spotify connect is a ghost
         // (no OAuth, template insight), and finishing lands back on home with
@@ -104,6 +124,162 @@ struct ProfileView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    // MARK: - Journey (base + drip manager)
+
+    /// The user-facing progression: the base foundation, then every dripped node
+    /// in order, each with its status and the cosmetic it grants. Ticks once a
+    /// second so the active countdown stays live.
+    private var journeySection: some View {
+        Section {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Phase")
+                Spacer()
+                Text(phaseLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(phaseColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(phaseColor.opacity(0.14), in: Capsule())
+            }
+
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                VStack(spacing: 0) {
+                    ForEach(Array(journeyRows.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { Divider() }
+                        journeyRowView(row)
+                    }
+                }
+            }
+        } header: {
+            Text("Your journey")
+        } footer: {
+            Text("The base comes first, no timer. After that a new node ripens every 24 hours; you can also add any source below whenever you like.")
+        }
+    }
+
+    private enum StepStatus {
+        case fed, ready, counting(TimeInterval), upcoming
+
+        var isUpcoming: Bool { if case .upcoming = self { return true }; return false }
+    }
+
+    private struct JourneyRow: Identifiable {
+        let entry: NodeCatalogEntry
+        let status: StepStatus
+        let cosmetic: CosmeticID?
+        let isBase: Bool
+        var id: String { entry.id }
+    }
+
+    private var journeyRows: [JourneyRow] {
+        let completed = Set(progression.state.completedEntryIDs)
+        var rows: [JourneyRow] = progression.baseEntries.map { entry in
+            JourneyRow(entry: entry,
+                       status: completed.contains(entry.id) ? .fed : .ready,
+                       cosmetic: nil,
+                       isBase: true)
+        }
+        for (index, step) in NodeCatalog.firstRunSchedule.enumerated() {
+            guard let entry = NodeCatalog.entry(step.entryID) else { continue }
+            rows.append(JourneyRow(entry: entry,
+                                   status: dripStatus(index: index, entry: entry, completed: completed),
+                                   cosmetic: step.reward.cosmetic,
+                                   isBase: false))
+        }
+        return rows
+    }
+
+    private func dripStatus(index: Int, entry: NodeCatalogEntry, completed: Set<String>) -> StepStatus {
+        if completed.contains(entry.id) { return .fed }
+        guard progression.state.mode == .drip else { return .upcoming }   // base / cooldown: not yet
+        if index == progression.state.cursor {
+            if progression.availableUnlock?.id == entry.id { return .ready }
+            if let remaining = progression.timeRemaining { return .counting(remaining) }
+            return .ready
+        }
+        return index < progression.state.cursor ? .fed : .upcoming
+    }
+
+    private func journeyRowView(_ row: JourneyRow) -> some View {
+        HStack(spacing: 12) {
+            FoodAppleView(entry: row.entry, size: 40)
+                .saturation(isFed(row.status) ? 1 : 0.7)
+                .opacity(row.status.isUpcoming ? 0.55 : 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.entry.title)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                Text(row.isBase ? "base" : "drip")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if let cosmetic = row.cosmetic {
+                cosmeticSwatch(cosmetic)
+            }
+            statusBadge(row.status)
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func statusBadge(_ status: StepStatus) -> some View {
+        let (text, color): (String, Color)
+        switch status {
+        case .fed: (text, color) = ("fed", .green)
+        case .ready: (text, color) = ("ready", .orange)
+        case .counting(let remaining): (text, color) = (formattedInterval(remaining), .secondary)
+        case .upcoming: (text, color) = ("soon", .secondary)
+        }
+        return Text(text)
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    private func cosmeticSwatch(_ id: CosmeticID) -> some View {
+        let earned = progression.state.earnedCosmetics.contains(id)
+        return Circle()
+            .fill(id.wormColor)
+            .frame(width: 16, height: 16)
+            .overlay(Circle().strokeBorder(.primary.opacity(0.15)))
+            .opacity(earned ? 1 : 0.35)
+            .overlay {
+                if !earned {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityLabel(earned ? "\(id.displayName) earned" : "\(id.displayName) locked")
+    }
+
+    private var phaseLabel: String {
+        switch progression.state.mode {
+        case .base: "Base"
+        case .drip: "Drip"
+        case .cooldown: "Cooldown"
+        }
+    }
+
+    private var phaseColor: Color {
+        switch progression.state.mode {
+        case .base: .orange
+        case .drip: .green
+        case .cooldown: .secondary
+        }
+    }
+
+    private func isFed(_ status: StepStatus) -> Bool {
+        if case .fed = status { return true }
+        return false
     }
 
     // MARK: - Progression Dev Panel
@@ -241,6 +417,58 @@ struct ProfileView: View {
                 .foregroundStyle(isSelected ? Color.accentColor : .secondary)
         }
         .buttonStyle(.borderless)
+    }
+
+    // MARK: - Food visuals
+
+    /// Every node's food — the emblem mapped onto the apple the worm eats.
+    /// Tap an apple to set a custom image (persisted); long-press to reset.
+    private var foodVisualsSection: some View {
+        Section {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 16)], spacing: 18) {
+                ForEach(NodeCatalog.all) { entry in
+                    foodCell(entry)
+                }
+            }
+            .padding(.vertical, 6)
+        } header: {
+            Text("Food")
+        } footer: {
+            Text("The emblem mapped onto each node's apple — what floats down and gets eaten. Tap to set a custom image; long-press to reset to the default.")
+        }
+    }
+
+    private func foodCell(_ entry: NodeCatalogEntry) -> some View {
+        Button {
+            editingFoodID = entry.id
+            showFoodPicker = true
+        } label: {
+            VStack(spacing: 6) {
+                FoodAppleView(entry: entry, size: 64)
+                Text(entry.title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                editingFoodID = entry.id
+                showFoodPicker = true
+            } label: {
+                Label("Choose image", systemImage: "photo")
+            }
+            if foodStore.hasCustomImage(for: entry.id) {
+                Button(role: .destructive) {
+                    foodStore.clearImage(for: entry.id)
+                } label: {
+                    Label("Reset to default", systemImage: "arrow.counterclockwise")
+                }
+            }
+        }
     }
 
     private var nodesSection: some View {

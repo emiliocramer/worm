@@ -47,12 +47,12 @@ final class ProgressionTests: XCTestCase {
         }
     }
 
-    func test_cooldownPool_isEveryUnscheduledEntry_promptsFirst() {
-        let scheduled = Set(NodeCatalog.firstRunSchedule.map(\.entryID))
-        let expected = Set(NodeCatalog.all.map(\.id)).subtracting(scheduled)
+    func test_cooldownPool_isEveryUnscheduledUnbasedEntry_promptsFirst() {
+        let used = Set(NodeCatalog.firstRunSchedule.map(\.entryID)).union(NodeCatalog.baseEntryIDs)
+        let expected = Set(NodeCatalog.all.map(\.id)).subtracting(used)
         XCTAssertEqual(Set(NodeCatalog.cooldownPool.map(\.id)), expected)
         for e in NodeCatalog.cooldownPool {
-            XCTAssertFalse(scheduled.contains(e.id), "\(e.id) is scheduled but also in cooldown")
+            XCTAssertFalse(used.contains(e.id), "\(e.id) is base/scheduled but also in cooldown")
         }
         // Prompts are offered before any source node.
         if let firstSource = NodeCatalog.cooldownPool.firstIndex(where: { $0.captureKind == .source }),
@@ -66,20 +66,56 @@ final class ProgressionTests: XCTestCase {
         for e in NodeCatalog.source { XCTAssertNotEqual(e.brainNodeID, .prompts) }
     }
 
+    /// A progression that has finished the base phase and is at the first drip
+    /// step (`apple-music`), armed. Mirrors the real base -> drip handoff.
     @MainActor
-    func test_freshProgression_firstUnlockAvailableImmediately() {
+    private func makeDripProgression(now: @escaping () -> Date) -> NodeProgression {
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
+                                storeFilename: "test-\(UUID().uuidString).json",
+                                now: now)
+        for entry in p.baseEntries { _ = p.claim(entry: entry) }
+        p.advance()   // base complete -> drip, cursor 0, armed
+        return p
+    }
+
+    @MainActor
+    func test_freshProgression_startsInBase_noCountdown() {
         let p = NodeProgression(scheduler: NoopUnlockScheduler(), storeFilename: "test-\(UUID().uuidString).json")
-        XCTAssertNotNil(p.availableUnlock)
-        XCTAssertEqual(p.availableUnlock?.id, "apple-music")
+        XCTAssertEqual(p.state.mode, .base)
+        XCTAssertNil(p.availableUnlock)           // base apples aren't offered via the drip
+        XCTAssertNil(p.timeRemaining)             // no countdown during the base
+        XCTAssertEqual(p.pendingBaseEntries.map(\.id), NodeCatalog.baseEntryIDs)
+    }
+
+    @MainActor
+    func test_feedingBaseSet_transitionsToDrip_andArmsFirstCountdown() {
+        var clock = Date(timeIntervalSince1970: 1_500_000)
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
+                                storeFilename: "test-\(UUID().uuidString).json",
+                                now: { clock })
+        let base = p.baseEntries
+        XCTAssertEqual(base.count, 3)
+
+        _ = p.claim(entry: base[0]); p.advance()
+        XCTAssertEqual(p.state.mode, .base)       // still building, no countdown armed
         XCTAssertNil(p.timeRemaining)
+        _ = p.claim(entry: base[1]); p.advance()
+        XCTAssertEqual(p.state.mode, .base)
+
+        _ = p.claim(entry: base[2]); p.advance()  // last base apple: cross into the drip
+        XCTAssertEqual(p.state.mode, .drip)
+        XCTAssertEqual(p.state.cursor, 0)
+        XCTAssertEqual(p.timeRemaining ?? 0, 24 * 3600, accuracy: 1)
+        XCTAssertNil(p.availableUnlock)           // counting down, not ready yet
+
+        clock = clock.addingTimeInterval(24 * 3600 + 1)
+        XCTAssertEqual(p.availableUnlock?.id, "apple-music")
     }
 
     @MainActor
     func test_arm_setsFutureDate_andHidesAvailability() {
         var clock = Date(timeIntervalSince1970: 1_000_000)
-        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
-                                storeFilename: "test-\(UUID().uuidString).json",
-                                now: { clock })
+        let p = makeDripProgression(now: { clock })
         p.arm(hours: 24)
         XCTAssertNil(p.availableUnlock)
         XCTAssertEqual(p.timeRemaining ?? 0, 24 * 3600, accuracy: 1)
@@ -91,8 +127,8 @@ final class ProgressionTests: XCTestCase {
     @MainActor
     func test_claimThenAdvance_movesCursor_recordsCompletion_armsNext() {
         var clock = Date(timeIntervalSince1970: 2_000_000)
-        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
-                                storeFilename: "test-\(UUID().uuidString).json", now: { clock })
+        let p = makeDripProgression(now: { clock })
+        p.forceUnlockNow()
         let first = p.availableUnlock!            // apple-music
         let reward = p.claim(entry: first)        // returns the StepReward for the reveal
         XCTAssertTrue(reward.insight)
@@ -106,9 +142,7 @@ final class ProgressionTests: XCTestCase {
 
     @MainActor
     func test_advancingPastLastStep_flipsToCooldown() {
-        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
-                                storeFilename: "test-\(UUID().uuidString).json",
-                                now: { Date(timeIntervalSince1970: 0) })
+        let p = makeDripProgression(now: { Date(timeIntervalSince1970: 0) })
         for entry in NodeCatalog.firstRunSchedule.map(\.entryID) {
             p.forceUnlockNow()
             _ = p.claim(entry: NodeCatalog.entry(entry)!)
@@ -122,13 +156,26 @@ final class ProgressionTests: XCTestCase {
 
     @MainActor
     func test_cosmeticReward_isRecordedAndActivated() {
-        let p = NodeProgression(scheduler: NoopUnlockScheduler(),
-                                storeFilename: "test-\(UUID().uuidString).json",
-                                now: { Date(timeIntervalSince1970: 0) })
+        let p = makeDripProgression(now: { Date(timeIntervalSince1970: 0) })
         p.forceUnlockNow(); _ = p.claim(entry: NodeCatalog.entry("apple-music")!); p.advance()
         p.forceUnlockNow(); _ = p.claim(entry: NodeCatalog.entry("fit-photo")!)  // reward has .midnight
         XCTAssertTrue(p.state.earnedCosmetics.contains(.midnight))
         XCTAssertEqual(p.state.activeCosmetic, .midnight)
+    }
+
+    @MainActor
+    func test_legacyDripSnapshot_doesNotRevertToBase() {
+        // A persisted state from before the base phase always carries mode="drip";
+        // decoding it must not drop the user back into the base.
+        let file = "test-\(UUID().uuidString).json"
+        var legacy = ProgressionState()            // memberwise default: .drip
+        legacy.cursor = 4
+        legacy.completedEntryIDs = ["apple-music", "fit-photo"]
+        SnapshotStore<ProgressionState>(filename: file).save(legacy)
+
+        let p = NodeProgression(scheduler: NoopUnlockScheduler(), storeFilename: file)
+        XCTAssertEqual(p.state.mode, .drip)
+        XCTAssertFalse(p.isBasePhase)
     }
 
     @MainActor

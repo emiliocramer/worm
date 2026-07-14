@@ -36,12 +36,27 @@ final class NodeProgression {
         self.scheduler = scheduler
         self.store = SnapshotStore(filename: storeFilename)
         self.now = now
-        self.state = store.load() ?? ProgressionState()
+        self.state = store.load() ?? .fresh
     }
 
-    /// The entry the user could unlock right now, if the gate is open.
+    // MARK: - Base phase
+
+    /// True while the user is still building the foundation: no countdown, a few
+    /// prominent apples on home instead of the single drip morsel.
+    var isBasePhase: Bool { state.mode == .base }
+
+    /// The full base set, in authored order.
+    var baseEntries: [NodeCatalogEntry] { NodeCatalog.baseEntries }
+
+    /// Base entries the user hasn't fed yet — what home shows scattered in the trees.
+    var pendingBaseEntries: [NodeCatalogEntry] {
+        baseEntries.filter { !state.completedEntryIDs.contains($0.id) }
+    }
+
+    /// The entry the user could unlock right now, if the gate is open. Nil during
+    /// the base phase (the base apples are offered directly, not through the drip).
     var availableUnlock: NodeCatalogEntry? {
-        guard isUnlockReady else { return nil }
+        guard !isBasePhase, isUnlockReady else { return nil }
         return nextEntry
     }
 
@@ -60,6 +75,8 @@ final class NodeProgression {
     /// The next entry to offer: schedule cursor in drip mode, pool in cooldown.
     private var nextEntry: NodeCatalogEntry? {
         switch state.mode {
+        case .base:
+            return nil   // base apples are offered directly, never through the drip
         case .drip:
             guard state.cursor < schedule.count else { return nil }
             return NodeCatalog.entry(schedule[state.cursor].entryID)
@@ -110,6 +127,13 @@ final class NodeProgression {
 
     func advance() {
         switch state.mode {
+        case .base:
+            // Only leave the base once every base apple is fed. Until then this
+            // is a no-op: base feeds never arm a countdown.
+            guard pendingBaseEntries.isEmpty else { return }
+            state.mode = .drip
+            state.cursor = 0
+            arm(hours: devIntervalOverrideHours ?? currentInterval)
         case .drip:
             state.cursor += 1
             if state.cursor >= schedule.count { state.mode = .cooldown }
@@ -134,7 +158,7 @@ final class NodeProgression {
 
     // MARK: - Dev / test helpers
     func forceUnlockNow() { state.nextUnlockAt = nil; scheduler.cancel(); persist() }
-    func reset() { state = ProgressionState(); scheduler.cancel(); persist() }
+    func reset() { state = .fresh; scheduler.cancel(); persist() }
     func jumpToCooldown() { state.mode = .cooldown; state.cursor = schedule.count; persist() }
 
     /// Dev-only: preview/apply a cosmetic directly.

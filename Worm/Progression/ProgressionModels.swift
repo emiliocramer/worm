@@ -36,7 +36,12 @@ struct ScheduleStep: Codable, Hashable {
 
 /// Persisted progression: the drip cursor and the unlock clock.
 struct ProgressionState: Codable, Hashable {
-    enum Mode: String, Codable, Hashable { case drip, cooldown }
+    /// `base` is the first-run foundation phase (a few prominent apples, no
+    /// countdown); once its set is fed we flip to `drip`, then `cooldown`.
+    /// The stored default is `.drip` so *decoded* legacy snapshots (which always
+    /// carry a `mode` key) stay where they were; only a genuinely fresh state
+    /// starts in `.base`, via `ProgressionState.fresh`.
+    enum Mode: String, Codable, Hashable { case base, drip, cooldown }
     var cursor = 0
     var nextUnlockAt: Date? = nil
     var completedEntryIDs: [String] = []
@@ -49,4 +54,13 @@ struct ProgressionState: Codable, Hashable {
     // can size its progress track against the actual window (drip/dev intervals
     // differ from the cooldown default).
     var lastArmDurationHours: Double? = nil
+
+    /// A brand-new install: starts in the `.base` foundation phase. Distinct
+    /// from the memberwise `init()` (whose `.drip` default is what a legacy
+    /// snapshot decodes to when it predates the base phase).
+    static var fresh: ProgressionState {
+        var state = ProgressionState()
+        state.mode = .base
+        return state
+    }
 }

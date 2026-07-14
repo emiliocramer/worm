@@ -28,6 +28,23 @@ enum NodeCatalog {
     ]
 
     static let prompts: [NodeCatalogEntry] = [
+        // Base-phase prompts (see `baseEntryIDs`): the first foundation the worm
+        // grows from, alongside the Photos source node.
+        .init(id: "lock-screen", title: "your lock screen", subtitle: "the first thing you see",
+              captureKind: .photo, sourceRoute: nil, prompt: PromptSpec(), glyph: "lock.iphone", brainNodeID: .prompts),
+        .init(id: "ideal-saturday", title: "your ideal saturday", subtitle: "in three words",
+              captureKind: .text, sourceRoute: nil, prompt: PromptSpec(placeholder: "three words"), glyph: "sun.max.fill", brainNodeID: .prompts),
+        // Banked fun prompts — never surface in the base, they ride the drip.
+        .init(id: "last-obsession", title: "the last thing you got obsessed with", subtitle: "a show, a snack, a rabbit hole",
+              captureKind: .text, sourceRoute: nil, prompt: PromptSpec(placeholder: "whatever it was"), glyph: "flame.fill", brainNodeID: .prompts),
+        .init(id: "nightstand", title: "what's on your nightstand", subtitle: "however it actually looks",
+              captureKind: .photo, sourceRoute: nil, prompt: PromptSpec(), glyph: "bed.double.fill", brainNodeID: .prompts),
+        .init(id: "everyday-order", title: "your everyday order", subtitle: "coffee, drink, whatever you always get",
+              captureKind: .text, sourceRoute: nil, prompt: PromptSpec(placeholder: "the usual"), glyph: "cup.and.saucer.fill", brainNodeID: .prompts),
+        .init(id: "window-view", title: "the view out your window", subtitle: "wherever you are right now",
+              captureKind: .photo, sourceRoute: nil, prompt: PromptSpec(), glyph: "window.vertical.closed", brainNodeID: .prompts),
+        .init(id: "room-corner", title: "a corner of a room you love", subtitle: "yours or anywhere",
+              captureKind: .photo, sourceRoute: nil, prompt: PromptSpec(), glyph: "house.fill", brainNodeID: .prompts),
         .init(id: "fit-photo", title: "photo of your fit", subtitle: "so I can see how you dress",
               captureKind: .photo, sourceRoute: nil, prompt: PromptSpec(), glyph: "camera.fill", brainNodeID: .prompts),
         .init(id: "latest-book", title: "the last book you read", subtitle: "title's enough",
@@ -48,24 +65,35 @@ enum NodeCatalog {
               captureKind: .photo, sourceRoute: nil, prompt: PromptSpec(), glyph: "camera.viewfinder", brainNodeID: .prompts),
     ]
 
+    /// The first-run foundation: a few prominent apples the user feeds before any
+    /// countdown exists. Photos (the camera roll) plus two quick self-reports.
+    /// These never appear in the drip schedule or cooldown pool.
+    static let baseEntryIDs: [String] = ["photos", "lock-screen", "ideal-saturday"]
+
+    static var baseEntries: [NodeCatalogEntry] { baseEntryIDs.compactMap(entry) }
+
+    /// The drip: everything not in the base, dripped one node per window. The base
+    /// three (`photos`, `lock-screen`, `ideal-saturday`) are banked out of here.
     static let firstRunSchedule: [ScheduleStep] = [
-        ScheduleStep(entryID: "apple-music",   reward: StepReward(insight: true)),
-        ScheduleStep(entryID: "fit-photo",     reward: StepReward(insight: true, cosmetic: .midnight)),
-        ScheduleStep(entryID: "latest-book",   reward: StepReward(insight: false)),
-        ScheduleStep(entryID: "youtube",       reward: StepReward(insight: true)),
-        ScheduleStep(entryID: "weekend",       reward: StepReward(insight: true)),
-        ScheduleStep(entryID: "comfort-movie", reward: StepReward(insight: false, cosmetic: .clay)),
-        ScheduleStep(entryID: "photos",        reward: StepReward(insight: true)),
-        ScheduleStep(entryID: "bookshelf",     reward: StepReward(insight: true, cosmetic: .moss)),
-        ScheduleStep(entryID: "contacts",      reward: StepReward(insight: true)),
-        ScheduleStep(entryID: "calendar",      reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "apple-music",    reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "fit-photo",      reward: StepReward(insight: true, cosmetic: .midnight)),
+        ScheduleStep(entryID: "latest-book",    reward: StepReward(insight: false)),
+        ScheduleStep(entryID: "youtube",        reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "weekend",        reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "comfort-movie",  reward: StepReward(insight: false, cosmetic: .clay)),
+        ScheduleStep(entryID: "last-obsession", reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "bookshelf",      reward: StepReward(insight: true, cosmetic: .moss)),
+        ScheduleStep(entryID: "contacts",       reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "everyday-order", reward: StepReward(insight: true)),
+        ScheduleStep(entryID: "calendar",       reward: StepReward(insight: true)),
     ]
 
     /// After the schedule is exhausted, cooldown offers every catalog entry that
-    /// the curated schedule never used, prompts first, then any unscheduled source.
+    /// neither the base nor the curated schedule used, prompts first, then any
+    /// unscheduled source.
     static let cooldownPool: [NodeCatalogEntry] = {
-        let scheduled = Set(firstRunSchedule.map(\.entryID))
-        let remaining = all.filter { !scheduled.contains($0.id) }
+        let used = Set(firstRunSchedule.map(\.entryID)).union(baseEntryIDs)
+        let remaining = all.filter { !used.contains($0.id) }
         return remaining.filter { $0.captureKind != .source } + remaining.filter { $0.captureKind == .source }
     }()
 
