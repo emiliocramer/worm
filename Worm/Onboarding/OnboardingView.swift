@@ -887,19 +887,13 @@ private struct MusicConnectionMorsel: View {
     let ink: Color
     let paper: Color
 
+    // The music node's food apple, so onboarding teaches the same "tap to eat"
+    // grammar the home morsel uses. Only the glyph fallback (music.note) shows
+    // until a real emblem is set for it.
+    private static let musicEntry = NodeCatalog.entry("apple-music") ?? NodeCatalog.source[0]
+
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(ink)
-                .frame(width: 54, height: 54)
-            Circle()
-                .stroke(paper.opacity(0.35), lineWidth: 1.5)
-                .frame(width: 42, height: 42)
-            Image(systemName: "music.note")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(paper)
-        }
-        .shadow(color: ink.opacity(0.18), radius: 12, y: 6)
+        FoodAppleView(entry: Self.musicEntry, size: 62, ink: ink, paper: paper)
     }
 }
 
