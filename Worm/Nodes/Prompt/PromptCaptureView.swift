@@ -11,12 +11,111 @@ enum PromptCaptureValue {
 /// A standalone sheet that collects one self-report answer for a prompt node.
 /// Paper-and-ink, terse and lowercase, matching onboarding. The caller presents
 /// it and does something with whatever comes back through `onSubmit`.
+///
+/// The per-kind input lives in `PromptInputSection` (which reports its answer via
+/// a binding) so the in-scene base-apple detail can reuse the exact same
+/// controls and place its own confirm button wherever it likes.
 struct PromptCaptureView: View {
     let entry: NodeCatalogEntry
     let ink: Color
     let paper: Color
     var onCancel: () -> Void
     var onSubmit: (PromptCaptureValue) -> Void
+
+    @State private var answer: PromptCaptureValue?
+
+    var body: some View {
+        ZStack {
+            background
+
+            VStack(spacing: 24) {
+                Spacer(minLength: 8)
+                FoodAppleView(entry: entry, size: 80)
+                titleBlock
+                PromptInputSection(entry: entry, ink: ink, paper: paper, answer: $answer)
+                doneButton
+                Spacer(minLength: 0)
+                waitingWorm
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 32)
+            .padding(.top, 72)
+            .padding(.bottom, 20)
+        }
+        .overlay(alignment: .topLeading) {
+            closeButton
+                .padding(.leading, 20)
+                .padding(.top, 16)
+        }
+    }
+
+    // MARK: - Background & chrome
+
+    private var background: some View {
+        ZStack {
+            paper.ignoresSafeArea()
+            RadialGradient(
+                gradient: Gradient(colors: [Color(red: 1, green: 0.98, blue: 0.9).opacity(0.75), .clear]),
+                center: UnitPoint(x: 0.5, y: 0.3),
+                startRadius: 20,
+                endRadius: 460
+            )
+            .ignoresSafeArea()
+        }
+    }
+
+    private var closeButton: some View {
+        Button(action: onCancel) {
+            Image(systemName: "xmark")
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.5))
+                .frame(width: 40, height: 40)
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(spacing: 10) {
+            Text(entry.title)
+                .font(.system(size: 27, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink)
+            Text(entry.subtitle)
+                .font(.system(size: 16, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.5))
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var doneButton: some View {
+        PromptDoneButton(enabled: answer != nil, ink: ink, paper: paper) {
+            if let answer { onSubmit(answer) }
+        }
+    }
+
+    private var waitingWorm: some View {
+        VStack(spacing: 8) {
+            OnboardingWormGlyph(
+                size: OnboardingWormSize(length: 96, thickness: 16),
+                color: ink.opacity(0.85),
+                eyeColor: paper
+            )
+            .frame(width: 190, height: 68)
+            Text("he's waiting")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.35))
+        }
+    }
+}
+
+/// The per-kind answer controls for a prompt entry (text / choice / photo). It
+/// owns the raw input state and reports a valid answer (or nil) through `answer`;
+/// the caller owns the confirm button. Reused by the fullscreen
+/// `PromptCaptureView` and by the in-scene base-apple detail on home.
+struct PromptInputSection: View {
+    let entry: NodeCatalogEntry
+    let ink: Color
+    let paper: Color
+    @Binding var answer: PromptCaptureValue?
 
     // .text / .choice free-text
     @State private var text = ""
@@ -31,76 +130,29 @@ struct PromptCaptureView: View {
     private var trimmedText: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            paper.ignoresSafeArea()
-
-            closeButton
-                .padding(.leading, 20)
-                .padding(.top, 16)
-
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .padding(.horizontal, 32)
-                .padding(.top, 96)
-        }
-    }
-
-    // MARK: - Chrome
-
-    private var closeButton: some View {
-        Button(action: onCancel) {
-            Image(systemName: "xmark")
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                .foregroundStyle(ink.opacity(0.5))
-                .frame(width: 40, height: 40)
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
         switch entry.captureKind {
         case .text:   textContent
         case .choice: choiceContent
         case .photo:  photoContent
-        case .source: sourceGuard
+        case .source: EmptyView()
         }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(entry.title)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .foregroundStyle(ink)
-            Text(entry.subtitle)
-                .font(.system(size: 16, weight: .medium, design: .rounded))
-                .foregroundStyle(ink.opacity(0.5))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - .text
 
     private var textContent: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            header
-
-            TextField("", text: $text, prompt: placeholderText)
-                .font(.system(size: 20, weight: .medium, design: .rounded))
-                .foregroundStyle(ink)
-                .tint(ink)
-                .padding(.vertical, 14)
-                .padding(.horizontal, 16)
-                .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
-                .onChange(of: text) { _, newValue in
-                    if newValue.count > charLimit {
-                        text = String(newValue.prefix(charLimit))
-                    }
-                }
-
-            doneButton(enabled: !trimmedText.isEmpty) {
-                onSubmit(.text(trimmedText))
+        TextField("", text: $text, prompt: placeholderText)
+            .font(.system(size: 20, weight: .medium, design: .rounded))
+            .foregroundStyle(ink)
+            .tint(ink)
+            .multilineTextAlignment(.center)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            .onChange(of: text) { _, newValue in
+                if newValue.count > charLimit { text = String(newValue.prefix(charLimit)) }
+                answer = trimmedText.isEmpty ? nil : .text(trimmedText)
             }
-        }
     }
 
     private var placeholderText: Text {
@@ -111,9 +163,7 @@ struct PromptCaptureView: View {
     // MARK: - .choice
 
     private var choiceContent: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            header
-
+        VStack(alignment: .center, spacing: 18) {
             chips
 
             if entry.prompt?.allowsFreeText == true {
@@ -121,27 +171,22 @@ struct PromptCaptureView: View {
                     .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundStyle(ink)
                     .tint(ink)
+                    .multilineTextAlignment(.center)
                     .padding(.vertical, 12)
                     .padding(.horizontal, 16)
                     .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
                     .onChange(of: text) { _, newValue in
                         if !newValue.isEmpty { selectedChip = nil }
-                        if newValue.count > charLimit {
-                            text = String(newValue.prefix(charLimit))
-                        }
+                        if newValue.count > charLimit { text = String(newValue.prefix(charLimit)) }
+                        updateChoiceAnswer()
                     }
-            }
-
-            doneButton(enabled: choiceAnswer != nil) {
-                if let answer = choiceAnswer { onSubmit(.text(answer)) }
             }
         }
     }
 
-    /// Selected chip wins; otherwise the free-text answer if present.
-    private var choiceAnswer: String? {
-        if let selectedChip { return selectedChip }
-        return trimmedText.isEmpty ? nil : trimmedText
+    private func updateChoiceAnswer() {
+        if let selectedChip { answer = .text(selectedChip) }
+        else { answer = trimmedText.isEmpty ? nil : .text(trimmedText) }
     }
 
     private var chips: some View {
@@ -150,6 +195,7 @@ struct PromptCaptureView: View {
                 Haptics.tick()
                 selectedChip = option
                 text = ""   // picking a chip clears free-text
+                updateChoiceAnswer()
             } label: {
                 Text(option)
                     .font(.system(size: 16, weight: .medium, design: .rounded))
@@ -169,15 +215,13 @@ struct PromptCaptureView: View {
 
     private var photoContent: some View {
         // v1: photo library; camera capture can come later.
-        VStack(alignment: .leading, spacing: 28) {
-            header
-
+        VStack(spacing: 18) {
             if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity)
-                    .frame(height: 240)
+                    .frame(height: 180)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
             }
@@ -199,41 +243,25 @@ struct PromptCaptureView: View {
                         if let loaded, let picked = UIImage(data: loaded) {
                             Haptics.impact(.light, intensity: 0.6)
                             image = picked
+                            answer = .photo(picked)
                         }
                         loadingPhoto = false
                     }
                 }
             }
-
-            if image != nil {
-                doneButton(enabled: true) {
-                    if let image { onSubmit(.photo(image)) }
-                }
-            }
         }
     }
+}
 
-    // MARK: - .source guard
+/// The shared "done" pill, so the fullscreen sheet and the in-scene detail read
+/// identically.
+struct PromptDoneButton: View {
+    let enabled: Bool
+    let ink: Color
+    let paper: Color
+    var action: () -> Void
 
-    private var sourceGuard: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("nothing to answer here.")
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                .foregroundStyle(ink)
-            Button(action: onCancel) {
-                Text("close")
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .foregroundStyle(paper)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(ink, in: Capsule())
-            }
-        }
-    }
-
-    // MARK: - shared
-
-    private func doneButton(enabled: Bool, action: @escaping () -> Void) -> some View {
+    var body: some View {
         Button {
             Haptics.success()
             action()
@@ -245,7 +273,62 @@ struct PromptCaptureView: View {
                 .padding(.vertical, 16)
                 .background(enabled ? ink : ink.opacity(0.25), in: Capsule())
         }
+        .buttonStyle(.plain)
         .disabled(!enabled)
+    }
+}
+
+/// The photo apple's below-the-worm controls. No selection → a primary "pick a
+/// photo". Once picked → a primary "done" with a small "pick another" beneath.
+/// The picked image is reported up via `answer`; the preview is shown elsewhere
+/// (in the detail's mid area).
+struct BasePhotoActions: View {
+    let ink: Color
+    let paper: Color
+    @Binding var answer: PromptCaptureValue?
+    var onDone: () -> Void
+
+    @State private var pickerItem: PhotosPickerItem?
+
+    private var hasImage: Bool {
+        if case .photo = answer { return true }
+        return false
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            if hasImage {
+                PromptDoneButton(enabled: true, ink: ink, paper: paper, action: onDone)
+                PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                    Text("pick another")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+            } else {
+                PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                    Text("pick a photo")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(paper)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(ink, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .onChange(of: pickerItem) { _, item in
+            guard let item else { return }
+            Task {
+                let loaded = try? await item.loadTransferable(type: Data.self)
+                await MainActor.run {
+                    if let loaded, let img = UIImage(data: loaded) {
+                        Haptics.impact(.light, intensity: 0.6)
+                        answer = .photo(img)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -305,7 +388,7 @@ private let previewPaper = Color(red: 0.97, green: 0.96, blue: 0.93)
 
 #Preview("text") {
     PromptCaptureView(
-        entry: NodeCatalog.entry("latest-book")!,
+        entry: NodeCatalog.entry("ideal-saturday")!,
         ink: .black,
         paper: previewPaper,
         onCancel: {},
@@ -316,16 +399,6 @@ private let previewPaper = Color(red: 0.97, green: 0.96, blue: 0.93)
 #Preview("choice") {
     PromptCaptureView(
         entry: NodeCatalog.entry("comfort-movie")!,
-        ink: .black,
-        paper: previewPaper,
-        onCancel: {},
-        onSubmit: { _ in }
-    )
-}
-
-#Preview("photo") {
-    PromptCaptureView(
-        entry: NodeCatalog.entry("fit-photo")!,
         ink: .black,
         paper: previewPaper,
         onCancel: {},
