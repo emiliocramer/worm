@@ -4,6 +4,7 @@ import SwiftUI
 /// view; the system back button returns to the graph.
 struct RootView: View {
     @State private var showSplash = true
+    @State private var showedOnboardingThisSession = false
     @AppStorage("worm.hasCompletedOnboarding") private var hasCompletedOnboarding = false
     private let paper = Color(red: 0.97, green: 0.96, blue: 0.93)
 
@@ -15,14 +16,18 @@ struct RootView: View {
                 NavigationStack {
                     Group {
                         if hasCompletedOnboarding {
-                            // Home's entrance starts on appear; keep it unmounted
-                            // until the splash is fully gone so the first crawl
-                            // becomes the transition into home, not background work.
-                            WormHomeView()
+                            // A fresh home is mounted after either entry path.
+                            // Onboarding gets a short handoff delay so its fade
+                            // cannot hide the scene's opening layers.
+                            WormHomeView(
+                                buildsForestOnEntry: true,
+                                forestBuildDelay: showedOnboardingThisSession ? 0.65 : 0
+                            )
                                 .transition(.opacity)
                         } else {
                             OnboardingView()
                                 .transition(.opacity)
+                                .onAppear { showedOnboardingThisSession = true }
                         }
                     }
                     .animation(.easeInOut(duration: 0.7), value: hasCompletedOnboarding)
