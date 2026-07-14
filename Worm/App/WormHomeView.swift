@@ -34,8 +34,9 @@ struct WormHomeView: View {
     /// tree slot while a base apple is being eaten.
     @State private var morselOrigin: CGPoint?
     // MARK: Base phase (first-run foundation, no countdown)
-    /// The foundation apples scattered in the trees, revealed once on entry.
-    @State private var baseApplesVisible = false
+    /// The foundation apples that have popped into the trees so far — populated
+    /// one at a time on entry so they arrive staggered, not all at once.
+    @State private var revealedBaseIDs: Set<String> = []
     /// The base apple currently flying into the worm — hidden from the tree layer
     /// so it doesn't double with the flying morsel.
     @State private var consumingBaseID: String?
@@ -163,9 +164,9 @@ struct WormHomeView: View {
 
                     // Base phase: a few prominent apples scattered in the trees,
                     // fed in any order, no countdown until the last one lands.
-                    if progression.isBasePhase, baseApplesVisible, !isNamingFlowActive {
+                    if progression.isBasePhase, !isNamingFlowActive {
                         ForEach(progression.pendingBaseEntries) { entry in
-                            if entry.id != consumingBaseID {
+                            if entry.id != consumingBaseID, revealedBaseIDs.contains(entry.id) {
                                 let slot = baseApplePosition(for: entry, in: viewport)
                                 VStack(spacing: 8) {
                                     FeedMorselView(entry: entry, ink: ink, paper: paper)
@@ -226,8 +227,11 @@ struct WormHomeView: View {
         .overlay(alignment: .top) {
             if !isNamingFlowActive, !namingHandoffVisible, homeControlsVisible {
                 if progression.isBasePhase {
+                    // Sit where the countdown's "daily food ready" line sits, so
+                    // the base and drip headers occupy the same spot.
                     baseEncouragement
-                        .padding(.top, 12)
+                        .padding(.top, 8)
+                        .offset(y: 100)
                 } else {
                     CountdownHeaderView(
                         progression: progression,
@@ -433,7 +437,7 @@ struct WormHomeView: View {
     /// apples never reshuffle as siblings get eaten. Scattered heights, "in the
     /// trees": upper-left canopy, upper-right canopy, lower-center.
     private func baseApplePosition(for entry: NodeCatalogEntry, in viewport: CGSize) -> CGPoint {
-        let slots: [(CGFloat, CGFloat)] = [(0.24, 0.34), (0.76, 0.27), (0.50, 0.45)]
+        let slots: [(CGFloat, CGFloat)] = [(0.23, 0.50), (0.77, 0.44), (0.50, 0.60)]
         let index = progression.baseEntries.firstIndex(of: entry) ?? 0
         let (fx, fy) = slots[index % slots.count]
         return CGPoint(x: viewport.width * fx, y: viewport.height * fy)
@@ -502,7 +506,7 @@ struct WormHomeView: View {
         morselFlight = 0
         morsel = nil
         morselOrigin = nil
-        baseApplesVisible = false
+        revealedBaseIDs = []
         consumingBaseID = nil
         digestCaption = nil
         wormWiggles = []
@@ -540,11 +544,17 @@ struct WormHomeView: View {
     /// phase offers: the scattered base apples, or the single drip morsel.
     private func revealFoodForCurrentPhase() async {
         if progression.isBasePhase {
-            await MainActor.run {
-                withAnimation(.spring(response: 0.7, dampingFraction: 0.82)) {
-                    baseApplesVisible = true
+            // Pop the apples into the trees one at a time so they arrive as a
+            // little scatter, not a single simultaneous appearance.
+            for entry in progression.pendingBaseEntries {
+                await MainActor.run {
+                    guard progression.isBasePhase else { return }
+                    withAnimation(.spring(response: 0.62, dampingFraction: 0.7)) {
+                        _ = revealedBaseIDs.insert(entry.id)
+                    }
+                    Haptics.impact(.light, intensity: 0.4)
                 }
-                Haptics.impact(.light, intensity: 0.4)
+                try? await Task.sleep(for: .seconds(0.45))
             }
         } else {
             await presentNextMorsel()
@@ -877,7 +887,7 @@ struct WormHomeView: View {
 
         // Base done: flip to the drip. advance() arms the first countdown, so the
         // header (hidden all through the base) now slides in with a live clock.
-        withAnimation(.easeOut(duration: 0.4)) { baseApplesVisible = false }
+        revealedBaseIDs = []
         progression.advance()
         if !askedNotificationPermission {
             askedNotificationPermission = true
