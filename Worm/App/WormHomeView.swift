@@ -59,7 +59,9 @@ struct WormHomeView: View {
     @State private var wormWiggles: [Worm.Wiggle] = []
     @State private var lastWormTapAt = -Double.infinity
     @State private var forestBuildProgress: CGFloat
-    @State private var hasCompletedForestBuild = false
+    /// The intro (forest build + worm crawl) plays once per session. After that,
+    /// re-appearing (e.g. popping back from profile) restores the settled scene.
+    @State private var hasPlayedEntrance = false
     @State private var homeControlsVisible: Bool
     @State private var forestBuildTask: Task<Void, Never>?
 
@@ -461,14 +463,24 @@ struct WormHomeView: View {
     private func beginHomePresentation() {
         forestBuildTask?.cancel()
 
-        guard buildsForestOnEntry, !hasCompletedForestBuild else {
+        // Second and later appearances this session (popping back from profile or
+        // a node detail): the scene is already established. Snap it to its settled
+        // state — worm resting, food/copy already present — with no replay.
+        guard !hasPlayedEntrance else {
+            restoreSettledScene()
+            return
+        }
+        hasPlayedEntrance = true
+
+        // Forest already painted (e.g. the replay demo): skip the build, just
+        // crawl the worm in.
+        guard buildsForestOnEntry else {
             forestBuildProgress = 1
             homeControlsVisible = true
             beginEntrance()
             return
         }
 
-        hasCompletedForestBuild = true
         forestBuildProgress = 0
         homeControlsVisible = false
         entranceStart = nil
@@ -495,7 +507,48 @@ struct WormHomeView: View {
         }
     }
 
-    // He crawls in every time you come home, but waits for the initial forest.
+    /// Re-entry without the intro: park everything in its final resting state so
+    /// the worm, food, and copy are simply already there.
+    private func restoreSettledScene() {
+        forestBuildTask?.cancel()
+        forestBuildTask = nil
+        forestBuildProgress = 1
+        homeControlsVisible = true
+        digestCaption = nil
+        wormWiggles = []
+        consumingBaseID = nil
+        morselOrigin = nil
+        gulpStart = nil
+        fromSize = earnedSize
+        toSize = earnedSize
+
+        // Place the entrance clock far enough in the past that the worm renders
+        // fully settled at its resting spot, no crawl.
+        let settledAgo = wormEntranceDelay + wormEntranceDuration + wormEntranceSettleDuration + 1
+        entranceStart = Date().timeIntervalSinceReferenceDate - settledAgo
+
+        // Getting here means naming is done (profile is unreachable during it).
+        resetNamingFlowIfNeeded()
+        nameTagVisible = wormDisplayName != nil
+
+        if progression.isBasePhase {
+            morsel = nil
+            morselPhase = .offscreen
+            revealedBaseIDs = Set(progression.pendingBaseEntries.map(\.id))
+        } else {
+            revealedBaseIDs = []
+            if let next = nextMorsel {
+                morsel = next
+                morselFlight = 0
+                morselPhase = .hovering
+            } else {
+                morsel = nil
+                morselPhase = .offscreen
+            }
+        }
+    }
+
+    // The worm crawls in once, on the first entry this session.
 
     private func beginEntrance() {
         let size = earnedSize
