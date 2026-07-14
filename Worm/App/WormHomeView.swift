@@ -46,6 +46,25 @@ struct WormHomeView: View {
     @State private var digestCaption: String?
     /// The prompt-kind entry currently being captured in the sheet, if any.
     @State private var capturingEntry: NodeCatalogEntry?
+    // MARK: Base-apple detail (in-scene expand → blur → copy + buttons)
+    /// The base apple currently expanded to center with its detail revealed.
+    @State private var expandedEntry: NodeCatalogEntry?
+    /// Where the expanded apple started (its tree slot), for the seamless grow.
+    @State private var expandedOrigin: CGPoint = .zero
+    /// Grown to center. Drives the apple's slot -> center travel.
+    @State private var appleExpanded = false
+    /// The blur + copy + buttons faded in behind/under the apple.
+    @State private var detailRevealed = false
+    /// The confirmed apple flying into the worm's mouth.
+    @State private var appleEating = false
+    /// Fades the flown apple out as it lands in the mouth, so it reads as
+    /// swallowed instead of lingering on the worm while `expandedEntry` is held.
+    @State private var appleSwallowed = false
+    /// The current valid self-report answer in the detail (nil = incomplete).
+    @State private var detailAnswer: PromptCaptureValue?
+    /// The "foundation complete" moment after the last base apple: explains the
+    /// daily drip, asks for notifications, then reveals the countdown.
+    @State private var baseCompleteVisible = false
     @State private var namingStep: NamingStep = .intro
     @State private var namingHeroVisible = false
     @State private var namingButtonVisible = false
@@ -126,6 +145,8 @@ struct WormHomeView: View {
                         onTap: reactToWormTap
                     )
                     .ignoresSafeArea(.keyboard, edges: .bottom)
+                    // Stay sharp above the detail blur when an apple is expanded.
+                    .zIndex((expandedEntry != nil || baseCompleteVisible) ? 4 : 0)
 
                     ForestHomeForeground(buildProgress: forestBuildProgress)
                         .ignoresSafeArea()
@@ -148,7 +169,7 @@ struct WormHomeView: View {
                             paper: paper
                         )
                         .transition(.nameTagPop)
-                        .zIndex(1)
+                        .zIndex((expandedEntry != nil || baseCompleteVisible) ? 4 : 1)
                         .allowsHitTesting(false)
                     }
 
@@ -168,23 +189,163 @@ struct WormHomeView: View {
                     // fed in any order, no countdown until the last one lands.
                     if progression.isBasePhase, !isNamingFlowActive {
                         ForEach(progression.pendingBaseEntries) { entry in
-                            if entry.id != consumingBaseID, revealedBaseIDs.contains(entry.id) {
+                            if entry.id != consumingBaseID, entry.id != expandedEntry?.id,
+                               revealedBaseIDs.contains(entry.id) {
                                 let slot = baseApplePosition(for: entry, in: viewport)
-                                VStack(spacing: 8) {
-                                    FeedMorselView(entry: entry, ink: ink, paper: paper)
-                                        .modifier(AttentionPulse(active: true))
-                                    Text(entry.title)
-                                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                                        .foregroundStyle(ink.opacity(0.42))
-                                        .frame(maxWidth: 120)
-                                        .multilineTextAlignment(.center)
+                                // Sequenced: only the first un-fed apple is live;
+                                // the rest wait, greyed, each unlocking the next.
+                                let isActive = entry.id == activeBaseEntryID
+                                let appleSize: CGFloat = 92
+                                // One motion only: the apple floats. The number and
+                                // the label stay put, so nothing fights it.
+                                ZStack {
+                                    FeedMorselView(entry: entry, ink: ink, paper: paper, size: appleSize)
+                                        .shadow(color: Color(red: 0.98, green: 0.55, blue: 0.28)
+                                            .opacity(isActive ? 0.5 : 0), radius: isActive ? 18 : 0)
+                                        .modifier(HoverBob(active: isActive))
+
+                                    BaseStepBadge(number: baseStepNumber(for: entry), ink: ink)
+                                        .offset(x: -(appleSize / 2 + 13))
+
+                                    BaseAppleTag(title: entry.title, ink: ink, paper: paper)
+                                        .offset(y: appleSize / 2 + 16)
                                 }
+                                .opacity(isActive ? 1 : 0.4)
+                                .modifier(RevealPop(isActive: isActive))
+                                .animation(.easeOut(duration: 0.45), value: isActive)
+                                .contentShape(Rectangle())
                                 .position(slot)
-                                .modifier(HoverBob(active: true))
-                                .onTapGesture { tapBaseApple(entry, at: slot) }
+                                .allowsHitTesting(isActive && expandedEntry == nil)
+                                .onTapGesture { openBaseDetail(entry, at: slot) }
                                 .transition(.scale(scale: 0.5).combined(with: .opacity))
                             }
                         }
+                    }
+
+                    // Base-apple detail: tap → the apple grows to center, a blur
+                    // fades in over the scene (behind worm/nametag/apple), then the
+                    // copy + buttons + X reveal.
+                    if let entry = expandedEntry {
+                        let big: CGFloat = 152
+                        let center = CGPoint(x: W / 2, y: H * 0.20)
+                        let appleScale: CGFloat = appleEating ? 0.16 : (appleExpanded ? 1 : 92 / big)
+                        let applePos = appleEating ? feedPoint : (appleExpanded ? center : expandedOrigin)
+
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .opacity(detailRevealed ? 1 : 0)
+                            .contentShape(Rectangle())
+                            .onTapGesture { closeBaseDetail() }
+                            .zIndex(3)
+
+                        FoodAppleView(entry: entry, size: big, emblemSize: 34, ink: ink, paper: paper)
+                            .scaleEffect(appleScale)
+                            .position(applePos)
+                            .opacity(appleSwallowed ? 0 : 1)
+                            .zIndex(5)
+                            .allowsHitTesting(false)
+
+                        if detailRevealed, !appleEating {
+                            let hasPreview: Bool = {
+                                if case .photo = detailAnswer { return true }
+                                return false
+                            }()
+
+                            // Title + subtitle ride high, just under the apple.
+                            baseDetailHeader(for: entry, showSubtitle: !hasPreview)
+                                .frame(maxWidth: 320)
+                                .position(x: W / 2, y: H * 0.33)
+                                .transition(.scale(scale: 0.7).combined(with: .opacity))
+                                .zIndex(5)
+
+                            // Content (preview / input) centered in the gap between
+                            // the subtitle and the worm.
+                            baseDetailContent(for: entry)
+                                .frame(maxWidth: 320)
+                                .position(x: W / 2, y: H * 0.53 - keyboardHeight * 0.5)
+                                .transition(.scale(scale: 0.7).combined(with: .opacity))
+                                .zIndex(5)
+
+                            // The CTA sits low, matching the X's small inset up top;
+                            // it lifts above the keyboard when typing a text answer.
+                            baseDetailCTA(for: entry)
+                                .frame(maxWidth: 300)
+                                .transition(.scale(scale: 0.7).combined(with: .opacity))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                .padding(.bottom, 14)
+                                .offset(y: -keyboardHeight)
+                                .zIndex(6)
+
+                            Button { closeBaseDetail() } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(ink.opacity(0.55))
+                                    .frame(width: 44, height: 44)
+                                    .background(.ultraThinMaterial, in: Circle())
+                            }
+                            .position(x: 42, y: 40)
+                            .transition(.opacity)
+                            .zIndex(6)
+                        }
+                    }
+
+                    // Foundation complete: the end-of-onboarding moment. Blur the
+                    // scene (worm stays sharp), explain the daily drip, ask for
+                    // notifications in context, then reveal the countdown.
+                    if baseCompleteVisible {
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                            .transition(.opacity)
+                            .zIndex(3)
+
+                        VStack(spacing: 14) {
+                            Text("he's got his foundation")
+                                .font(.system(size: 28, weight: .bold, design: .serif))
+                                .foregroundStyle(ink)
+                            Text("from here, \(wormDisplayName ?? "he") gets hungry once a day — a new thing to feed him, and he reads you a little sharper each time.")
+                                .font(.system(size: 16, weight: .medium, design: .rounded))
+                                .foregroundStyle(ink.opacity(0.6))
+                        }
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
+                        .position(x: W / 2, y: H * 0.30)
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        .zIndex(5)
+
+                        VStack(spacing: 12) {
+                            Text("want a nudge when he's hungry?")
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(ink.opacity(0.5))
+                            Button {
+                                Haptics.success()
+                                enableNotificationsThenFinish()
+                            } label: {
+                                Text("notify me")
+                                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(paper)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 16)
+                                    .background(ink, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            Button {
+                                Haptics.impact(.light)
+                                askedNotificationPermission = true
+                                finishFoundation()
+                            } label: {
+                                Text("not now")
+                                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                                    .foregroundStyle(ink.opacity(0.5))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .frame(maxWidth: 300)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 14)
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        .zIndex(6)
                     }
 
                     if !isNamingFlowActive, let morsel, morselPhase == .hovering || morselPhase == .fed {
@@ -228,24 +389,33 @@ struct WormHomeView: View {
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay(alignment: .top) {
             if !isNamingFlowActive, !namingHandoffVisible, homeControlsVisible {
-                if progression.isBasePhase {
-                    // Sit where the countdown's "daily food ready" line sits, so
-                    // the base and drip headers occupy the same spot.
-                    baseEncouragement
+                Group {
+                    if progression.isBasePhase {
+                        // Sit where the countdown's "daily food ready" line sits, so
+                        // the base and drip headers occupy the same spot.
+                        baseEncouragement
+                            .padding(.top, 8)
+                            .offset(y: 100)
+                    } else {
+                        CountdownHeaderView(
+                            progression: progression,
+                            ink: ink,
+                            paper: paper,
+                            onOpen: {
+                                Haptics.impact(.medium)
+                                Task { await presentNextMorsel() }
+                            }
+                        )
                         .padding(.top, 8)
-                        .offset(y: 100)
-                } else {
-                    CountdownHeaderView(
-                        progression: progression,
-                        ink: ink,
-                        paper: paper,
-                        onOpen: {
-                            Haptics.impact(.medium)
-                            Task { await presentNextMorsel() }
-                        }
-                    )
-                    .padding(.top, 8)
+                    }
                 }
+                // Rises back with weight once the detail closes / an apple is fed —
+                // independent of the apple, so closing never re-pops it. Hidden
+                // through the foundation-complete moment too.
+                .opacity(homeChromeVisible ? 1 : 0)
+                .offset(y: homeChromeVisible ? 0 : 18)
+                .animation(.spring(response: 0.7, dampingFraction: 0.72), value: homeChromeVisible)
+                .allowsHitTesting(homeChromeVisible)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -261,6 +431,9 @@ struct WormHomeView: View {
                 .accessibilityLabel("Profile")
                 .padding(.horizontal, 20)
                 .padding(.top, 6)
+                .opacity(homeChromeVisible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.3), value: homeChromeVisible)
+                .allowsHitTesting(homeChromeVisible)
             }
         }
         .overlay(alignment: .bottom) {
@@ -413,11 +586,11 @@ struct WormHomeView: View {
     private var baseEncouragement: some View {
         let remaining = progression.pendingBaseEntries.count
         return VStack(spacing: 4) {
-            Text("FEED HIM")
+            Text("let \(wormDisplayName ?? "him")")
                 .font(.system(size: 34, weight: .semibold, design: .serif))
                 .foregroundStyle(ink.opacity(0.85))
-            Text("A BASE")
-                .font(.system(size: 34, weight: .bold, design: .serif))
+            Text("get to know you")
+                .font(.system(size: 34, weight: .semibold, design: .serif))
                 .foregroundStyle(ink.opacity(0.86))
             Text(baseSubtitle(remaining: remaining))
                 .font(.system(size: 15, weight: .medium, design: .rounded))
@@ -429,17 +602,30 @@ struct WormHomeView: View {
 
     private func baseSubtitle(remaining: Int) -> String {
         switch remaining {
-        case 1: "one more to go"
-        case 2: "two more to go"
-        default: "everything he eats makes him sharper"
+        case 1: "one more, then he starts to get you"
+        case 2: "give him a few things to go on"
+        default: "the more he sees,\n the better he knows you"
         }
+    }
+
+    /// The one base apple that's currently live: the first in the fixed base
+    /// order that hasn't been fed yet. Feeding it advances the sequence.
+    private var activeBaseEntryID: String? {
+        progression.pendingBaseEntries.first?.id
+    }
+
+    /// The apple's step number (1-based) in the fixed base order, shown in its badge.
+    private func baseStepNumber(for entry: NodeCatalogEntry) -> Int {
+        (progression.baseEntries.firstIndex(of: entry) ?? 0) + 1
     }
 
     /// A fixed tree slot per base entry, keyed off its position in the base set so
     /// apples never reshuffle as siblings get eaten. Scattered heights, "in the
     /// trees": upper-left canopy, upper-right canopy, lower-center.
     private func baseApplePosition(for entry: NodeCatalogEntry, in viewport: CGSize) -> CGPoint {
-        let slots: [(CGFloat, CGFloat)] = [(0.23, 0.50), (0.77, 0.44), (0.50, 0.60)]
+        // Two up top (left/right), one lower-center. Spread wide with room below
+        // each for its tag, and the lower one lifted clear of the worm's bed.
+        let slots: [(CGFloat, CGFloat)] = [(0.27, 0.43), (0.74, 0.45), (0.50, 0.60)]
         let index = progression.baseEntries.firstIndex(of: entry) ?? 0
         let (fx, fy) = slots[index % slots.count]
         return CGPoint(x: viewport.width * fx, y: viewport.height * fy)
@@ -694,6 +880,12 @@ struct WormHomeView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// The top header + profile button are visible only in the plain home state —
+    /// hidden while an apple detail or the foundation-complete moment is up.
+    private var homeChromeVisible: Bool {
+        expandedEntry == nil && !baseCompleteVisible
+    }
+
     private var isNamingFlowActive: Bool {
         !hasWormName && !namingCompleted
     }
@@ -841,6 +1033,189 @@ struct WormHomeView: View {
         }
     }
 
+    // MARK: - Base-apple detail flow
+
+    /// Tap a base apple: haptic, then grow it to center and, once it lands, fade
+    /// in the blur and reveal its copy + buttons. Replaces the old capture sheet.
+    private func openBaseDetail(_ entry: NodeCatalogEntry, at slot: CGPoint) {
+        guard expandedEntry == nil, consumingBaseID == nil else { return }
+        Haptics.impact(.medium)
+        expandedOrigin = slot
+        appleExpanded = false
+        detailRevealed = false
+        appleEating = false
+        appleSwallowed = false
+        detailAnswer = nil
+        expandedEntry = entry
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.8)) { appleExpanded = true }
+        Task {
+            try? await Task.sleep(for: .seconds(0.42))
+            await MainActor.run {
+                // A springy reveal so the copy + button pop in, not slide.
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) { detailRevealed = true }
+            }
+        }
+    }
+
+    /// Title + subtitle for the expanded detail (subtitle hidden once a photo
+    /// preview is carrying the meaning).
+    @ViewBuilder
+    private func baseDetailHeader(for entry: NodeCatalogEntry, showSubtitle: Bool) -> some View {
+        VStack(spacing: 8) {
+            Text(entry.title)
+                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .foregroundStyle(ink)
+            if showSubtitle {
+                Text(entry.resolvedSubtitle(wormName: wormDisplayName))
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.6))
+            }
+        }
+        .multilineTextAlignment(.center)
+    }
+
+    /// The middle content of the expanded detail: a photo preview once picked, or
+    /// the self-report input for text/choice. Source apples have none.
+    @ViewBuilder
+    private func baseDetailContent(for entry: NodeCatalogEntry) -> some View {
+        switch entry.captureKind {
+        case .photo:
+            if case .photo(let img) = detailAnswer {
+                // scaledToFit + height-cap keeps the real aspect (a lock screen
+                // stays a tall card) with no letterbox side-margins.
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 230)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(ink.opacity(0.12), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.15), radius: 12, y: 6)
+            }
+        case .text, .choice:
+            PromptInputSection(entry: entry, ink: ink, paper: paper, answer: $detailAnswer)
+        case .source:
+            EmptyView()
+        }
+    }
+
+    /// The confirm button for the expanded detail, shown below the worm.
+    @ViewBuilder
+    private func baseDetailCTA(for entry: NodeCatalogEntry) -> some View {
+        switch entry.captureKind {
+        case .source:
+            Button {
+                Haptics.success()
+                confirmBaseSource(entry)
+            } label: {
+                Text("let him in")
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(paper)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(ink, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        case .photo:
+            // pick a photo → (done + pick another), all below the worm.
+            BasePhotoActions(ink: ink, paper: paper, answer: $detailAnswer) {
+                if let detailAnswer { confirmBasePrompt(entry, detailAnswer) }
+            }
+        case .text, .choice:
+            PromptDoneButton(enabled: detailAnswer != nil, ink: ink, paper: paper) {
+                if let detailAnswer { confirmBasePrompt(entry, detailAnswer) }
+            }
+        }
+    }
+
+    /// X / tap-outside: reverse it — copy fades, apple shrinks back to its slot.
+    private func closeBaseDetail() {
+        guard expandedEntry != nil, !appleEating else { return }
+        Haptics.impact(.light)
+        // Copy + CTA pop out; the apple shrinks back to its slot.
+        withAnimation(.easeIn(duration: 0.22)) { detailRevealed = false }
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { appleExpanded = false }
+        Task {
+            try? await Task.sleep(for: .seconds(0.4))
+            await MainActor.run {
+                // Clear WITHOUT an animation so the base apple doesn't "reload"
+                // (re-insert with its pop transition) — the shrunk expanded apple
+                // was already sitting exactly in its slot, so the swap is seamless.
+                // The header + profile fade back on their own opacity animation.
+                expandedEntry = nil
+            }
+        }
+    }
+
+    /// Prompt answered in the detail: record it, then eat.
+    private func confirmBasePrompt(_ entry: NodeCatalogEntry, _ value: PromptCaptureValue) {
+        switch value {
+        case .text(let str): promptNode.record(entryID: entry.id, title: entry.title, answer: str)
+        case .photo: promptNode.recordPhoto(entryID: entry.id, title: entry.title, visionKeywords: [])
+        }
+        eatExpanded(entry)
+    }
+
+    /// Source "let him in": authorize (sync runs in the background), then eat.
+    /// Denied → just close, no claim.
+    private func confirmBaseSource(_ entry: NodeCatalogEntry) {
+        Task {
+            let granted = await connectNode(for: entry.sourceRoute)
+            await MainActor.run {
+                if granted { eatExpanded(entry) } else { closeBaseDetail() }
+            }
+        }
+    }
+
+    /// The confirmed apple flies into the worm and he swallows + grows; then, as a
+    /// first-run beat, the scene un-blurs, the "eating ..." line sits for a moment,
+    /// and finally the home flow returns with weight — the next step pops in and the
+    /// "let ___ get to know you" header rises back. Deliberately unhurried.
+    private func eatExpanded(_ entry: NodeCatalogEntry) {
+        // The last base apple? Then this eat rolls into the finish moment, not
+        // back to the base flow.
+        let isLastBase = progression.pendingBaseEntries.map(\.id) == [entry.id]
+        withAnimation(.easeIn(duration: 0.25)) { detailRevealed = false }   // copy/CTA out, blur fades
+        appleSwallowed = false
+        withAnimation(.timingCurve(0.4, 0, 0.2, 1, duration: 0.62)) { appleEating = true }  // apple into the mouth
+        // Snuff the apple out just as it reaches the mouth so it's gone by the
+        // time the worm gulps — no lingering morsel over him during the hold.
+        withAnimation(.easeIn(duration: 0.16).delay(0.46)) { appleSwallowed = true }
+        // The "eating your camera roll" line settles in under the worm.
+        withAnimation(.easeIn(duration: 0.4)) { digestCaption = "eating \(entry.eatingNoun)" }
+        Task {
+            await settleGrow()                       // he swallows and grows a notch
+            await MainActor.run { Haptics.success() }
+
+            // Hold on the digest beat — first-run, let the moment land before we
+            // snap back to the flow. `expandedEntry` stays set so the eaten apple
+            // doesn't flash back into its tree slot during the pause.
+            try? await Task.sleep(for: .seconds(1.5))
+
+            await MainActor.run {
+                Haptics.impact(.medium)
+                // The return, with weight: claim, and either reveal the next step
+                // (RevealPop + header rise) or, if this was the last, roll straight
+                // into the "foundation complete" moment.
+                withAnimation(.spring(response: 0.8, dampingFraction: 0.68)) {
+                    finishBaseUnlock(entry)
+                    expandedEntry = nil
+                    if isLastBase { baseCompleteVisible = true }
+                }
+                appleExpanded = false
+                appleEating = false
+                appleSwallowed = false
+                detailRevealed = false
+            }
+
+            // The "eating ..." line lingers a touch past the return, then clears.
+            try? await Task.sleep(for: .seconds(1.3))
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
+            }
+        }
+    }
+
     // MARK: - Feeding
 
     private func feed(_ morsel: FeedMorsel) {
@@ -894,9 +1269,12 @@ struct WormHomeView: View {
 
     private func connectBaseSource(_ entry: NodeCatalogEntry) async {
         await MainActor.run {
-            withAnimation(.easeIn(duration: 0.5)) { digestCaption = "eating \(entry.title)..." }
+            withAnimation(.easeIn(duration: 0.5)) { digestCaption = "eating \(entry.eatingNoun)" }
         }
         if await connectNode(for: entry.sourceRoute) {
+            // Let the "eating…" beat read for a moment (the sync is already
+            // running in the background), then move on.
+            try? await Task.sleep(for: .seconds(1.6))
             await MainActor.run {
                 Haptics.success()
                 withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
@@ -938,17 +1316,29 @@ struct WormHomeView: View {
 
         guard baseComplete else { return }
 
-        // Base done: flip to the drip. advance() arms the first countdown, so the
-        // header (hidden all through the base) now slides in with a live clock.
+        // Base done. Don't arm the countdown or ask for notifications yet — that's
+        // the "foundation complete" moment (`baseCompleteVisible`), which explains
+        // the daily drip, asks permission in context, then reveals the countdown.
         revealedBaseIDs = []
+    }
+
+    /// Proceed past the completion moment: arm the first countdown (so the header
+    /// slides in with a live clock) and dismiss the interstitial.
+    private func finishFoundation() {
+        withAnimation(.easeInOut(duration: 0.45)) { baseCompleteVisible = false }
         progression.advance()
-        if !askedNotificationPermission {
-            askedNotificationPermission = true
-            Task { await progression.requestNotificationPermission() }
-        }
         Task {
-            try? await Task.sleep(for: .seconds(1.6))
+            try? await Task.sleep(for: .seconds(0.2))
             await presentNextMorsel()   // no-op while the fresh countdown runs
+        }
+    }
+
+    /// "notify me": ask in context, then reveal the countdown either way.
+    private func enableNotificationsThenFinish() {
+        askedNotificationPermission = true
+        Task {
+            await progression.requestNotificationPermission()
+            await MainActor.run { finishFoundation() }
         }
     }
 
@@ -1025,9 +1415,12 @@ struct WormHomeView: View {
 
     private func connectSource(_ entry: NodeCatalogEntry) async {
         await MainActor.run {
-            withAnimation(.easeIn(duration: 0.5)) { digestCaption = "eating \(entry.title)..." }
+            withAnimation(.easeIn(duration: 0.5)) { digestCaption = "eating \(entry.eatingNoun)" }
         }
         if await connectNode(for: entry.sourceRoute) {
+            // Let the "eating…" beat read for a moment (the sync is already
+            // running in the background), then move on.
+            try? await Task.sleep(for: .seconds(1.6))
             await MainActor.run {
                 Haptics.success()
                 withAnimation(.easeOut(duration: 0.6)) { digestCaption = nil }
@@ -1057,43 +1450,49 @@ struct WormHomeView: View {
         }
     }
 
-    /// Drive the source node matching this route through connect + sync. Returns
-    /// whether it ended up authorized.
+    /// Authorize the source node matching this route, then kick off its sync in
+    /// the background. Returns whether it ended up authorized — authorization is
+    /// the only gate on "fed". Crucially this awaits `requestAccess()` (the
+    /// permission prompt) only, NOT the node's `connect()` (which also awaits the
+    /// full `syncEverything()`). The heavy data pull runs in the background via
+    /// `startBackgroundSync` so the eating beat is short and the user can feed
+    /// the next apple immediately while this node fills in.
     private func connectNode(for route: NodeRoute?) async -> Bool {
         switch route {
         case .appleMusic:
-            await appleMusic.connect()
-            guard appleMusic.isAuthorized else { return false }
-            await appleMusic.syncEverything()
+            guard await appleMusic.requestAccess() else { return false }
+            startBackgroundSync { await appleMusic.syncEverything() }
             return true
         case .youtube:
-            await youtube.connect()
-            guard youtube.isAuthorized else { return false }
-            await youtube.syncEverything()
+            guard await youtube.requestAccess() else { return false }
+            startBackgroundSync { await youtube.syncEverything() }
             return true
         case .photos:
-            await photos.connect()
-            guard photos.isAuthorized else { return false }
-            await photos.syncEverything()
+            guard await photos.requestAccess() else { return false }
+            startBackgroundSync { await photos.syncEverything() }
             return true
         case .contacts:
-            await contacts.connect()
-            guard contacts.isAuthorized else { return false }
-            await contacts.syncEverything()
+            guard await contacts.requestAccess() else { return false }
+            startBackgroundSync { await contacts.syncEverything() }
             return true
         case .calendar:
-            await calendar.connect()
-            guard calendar.isAuthorized else { return false }
-            await calendar.syncEverything()
+            guard await calendar.requestAccess() else { return false }
+            startBackgroundSync { await calendar.syncEverything() }
             return true
         case .spotify:
-            await spotify.connect()
-            guard spotify.isAuthorized else { return false }
-            await spotify.syncEverything()
+            guard await spotify.requestAccess() else { return false }
+            startBackgroundSync { await spotify.syncEverything() }
             return true
         default:
             return false
         }
+    }
+
+    /// Run a node's full sync without blocking the feed flow. The node managers
+    /// live for the app's lifetime (owned by `WormApp`) and persist their own
+    /// snapshots, so this fire-and-forget task safely finishes on its own.
+    private func startBackgroundSync(_ sync: @escaping () async -> Void) {
+        Task { await sync() }
     }
 
     // MARK: - Reward
@@ -1541,9 +1940,12 @@ private struct FeedMorselView: View {
     let entry: NodeCatalogEntry
     let ink: Color
     let paper: Color
+    var size: CGFloat = 62
+    /// Held fixed so a bigger apple just shows more apple, not a bigger emblem.
+    var emblemSize: CGFloat = 26
 
     var body: some View {
-        FoodAppleView(entry: entry, size: 62, ink: ink, paper: paper)
+        FoodAppleView(entry: entry, size: size, emblemSize: emblemSize, ink: ink, paper: paper)
             .contentShape(Circle().inset(by: -14))
     }
 }
@@ -1582,6 +1984,60 @@ private struct AttentionPulse: ViewModifier {
                 value: on
             )
             .onAppear { on = true }
+    }
+}
+
+/// A small numbered step marker beside a base apple: white disc, dotted ink
+/// border, the step number. The caller dims it (via opacity) when the step
+/// isn't live yet.
+private struct BaseStepBadge: View {
+    let number: Int
+    let ink: Color
+
+    var body: some View {
+        Text("\(number)")
+            .font(.system(size: 13, weight: .bold, design: .rounded))
+            .foregroundStyle(ink)
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(.white))
+            .overlay(
+                Circle().strokeBorder(ink, style: StrokeStyle(lineWidth: 1.5, dash: [2.5, 2.5]))
+            )
+            .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+    }
+}
+
+/// The little label under a base apple: plain serif ink, no placard. Cohesive
+/// with the serif header, nothing decorative.
+private struct BaseAppleTag: View {
+    let title: String
+    let ink: Color
+    let paper: Color
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 14, weight: .medium, design: .serif))
+            .foregroundStyle(ink.opacity(0.6))
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 120)
+    }
+}
+
+/// When a step becomes active (the one before it was just eaten), give it a
+/// springy scale pop so the unlock reads clearly.
+private struct RevealPop: ViewModifier {
+    let isActive: Bool
+    @State private var scale: CGFloat = 1
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
+            .onChange(of: isActive) { _, now in
+                guard now else { return }
+                scale = 1.45
+                withAnimation(.spring(response: 0.7, dampingFraction: 0.5)) { scale = 1 }
+            }
     }
 }
 
