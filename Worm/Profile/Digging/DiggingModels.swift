@@ -16,6 +16,8 @@ enum SeedEntityType: String, Codable, Hashable {
     case place
     case routine
     case aesthetic
+    /// A playlist named after an artist: the loudest local devotion signal.
+    case devotion
 }
 
 /// A directly observed, evidence-backed entity from a primary node.
@@ -170,10 +172,15 @@ struct DigLead: Codable, Hashable, Identifiable {
 
 /// Winning journeys and graded leads carried across pulls. Each dig starts
 /// from what previous expeditions already proved instead of re-discovering it.
+/// `recentJourneys`/`recentPicks` power variety pressure: routes and scenes
+/// surfaced in the last few pulls are penalized so consecutive digs vary
+/// their angle instead of converging on one genre.
 struct DigMemorySnapshot: Codable, Hashable {
     var journeyWins: [String: Int] = [:]
     var leads: [DigLead] = []
     var updatedAt: Date? = nil
+    var recentJourneys: [String]? = nil
+    var recentPicks: [String]? = nil
 }
 
 /// Everything one dig produced, attached to the answer path and the brain log.
@@ -193,6 +200,9 @@ struct DigResult: Codable, Hashable {
     var leads: [DigLead]? = nil
     /// Priced model calls made inside the dig (scouts, assayers, foreman).
     var spend: [ModelCallRecord]? = nil
+    /// Picks surfaced in recent pulls, carried into the judge prompt so the
+    /// next pick varies its angle.
+    var recentPicks: [String]? = nil
 
     var hasPool: Bool { !pool.isEmpty }
 

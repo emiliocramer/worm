@@ -436,18 +436,29 @@ final class YouTubeCultureNode {
     }
 
     func connect() async {
+        guard await requestAccess() else { return }
+        // Sync unless we already restored a snapshot (fresh auth has none, so it
+        // still syncs). Mirrors the original connect() behavior.
+        if !hasRestoredSnapshot {
+            await syncEverything()
+        }
+    }
+
+    /// Acquire Google authorization only (reusing a stored session when
+    /// possible), without the follow-on sync. Returns whether the node ended up
+    /// authorized. The feed flow uses this so the heavy sync can run in the
+    /// background instead of blocking the UI; `connect()` = this + `syncEverything()`.
+    @discardableResult
+    func requestAccess() async -> Bool {
         lastErrorMessage = nil
         guard isConfigured else {
             lastErrorMessage = configurationMessage ?? "Google is not configured."
-            return
+            return false
         }
 
         if isAuthorized || loadStoredTokensIfAvailable() {
             isAuthorized = true
-            if !hasRestoredSnapshot {
-                await syncEverything()
-            }
-            return
+            return true
         }
 
         do {
@@ -459,7 +470,7 @@ final class YouTubeCultureNode {
             grantedScopes = newTokens.scopes.sorted()
             isAuthorized = true
             isAuthorizing = false
-            await syncEverything()
+            return true
         } catch {
             isAuthorizing = false
             if (error as NSError).domain == ASWebAuthenticationSessionError.errorDomain,
@@ -468,6 +479,7 @@ final class YouTubeCultureNode {
             } else {
                 lastErrorMessage = error.localizedDescription
             }
+            return false
         }
     }
 

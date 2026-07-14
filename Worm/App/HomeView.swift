@@ -11,19 +11,6 @@ struct HomeView: View {
 
     var body: some View {
         DiggingView(allowsHaptics: allowsDiggingHaptics)
-            .overlay(alignment: .topTrailing) {
-                NavigationLink(value: NodeRoute.profile) {
-                    Image(systemName: "person.crop.circle")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.76))
-                        .frame(width: 44, height: 44)
-                        .liquidGlass(in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Profile")
-                .padding(.horizontal, 20)
-                .padding(.top, 6)
-            }
             .overlay(alignment: .bottom) {
                 Text("Combing the internet…\ncome back soon.")
                     .font(.system(size: 15, weight: .medium, design: .rounded))
@@ -55,6 +42,20 @@ struct HomeView: View {
             //         .padding(.top, 6)
             //     }
             // }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: NodeRoute.profile) {
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.76))
+                            .frame(width: 44, height: 44)
+                            .liquidGlass(in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Profile")
+                }
+            }
     }
 }
 

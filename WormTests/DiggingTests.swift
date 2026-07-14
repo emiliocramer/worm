@@ -417,6 +417,101 @@ final class DiggingTests: XCTestCase {
         XCTAssertEqual(bare.depth, 3)
     }
 
+    // MARK: - Revision C journeys and variety
+
+    func testDevotionSeedsFromPlaylistTitles() {
+        let seeds = BrainSeedExtractor.devotionSeeds(
+            playlists: ["MAC MILLER", "road trip emilio", "Deftones", "boosie"],
+            artistNames: ["Mac Miller", "Deftones", "Fleetwood Mac"],
+            node: .spotify,
+            freshness: nil
+        )
+        XCTAssertEqual(Set(seeds.map(\.title)), ["Mac Miller", "Deftones"])
+        XCTAssertTrue(seeds.allSatisfy { $0.entityType == .devotion && $0.strength == 0.85 })
+    }
+
+    func testPhotoAlbumTitlesCollapseToPlaces() {
+        XCTAssertEqual(BrainSeedExtractor.placeName(fromAlbumTitle: "Mexxiiicooooo"), "Mexico")
+        XCTAssertEqual(BrainSeedExtractor.placeName(fromAlbumTitle: "Morocco"), "Morocco")
+        XCTAssertNil(BrainSeedExtractor.placeName(fromAlbumTitle: "Pari"))
+        XCTAssertNil(BrainSeedExtractor.placeName(fromAlbumTitle: "Fulton dump"))
+
+        let seeds = BrainSeedExtractor.photosSeeds(
+            locationNames: [],
+            albumTitles: ["Mexxiiicooooo", "Morocco", "WhatsApp", "NFTs"],
+            freshness: nil
+        )
+        XCTAssertEqual(Set(seeds.map(\.title)), ["Mexico", "Morocco"])
+        XCTAssertTrue(seeds.allSatisfy { $0.entityType == .place })
+    }
+
+    func testNewJourneyPredicates() {
+        let devotion = [seed(.devotion, "Deftones", strength: 0.85)]
+        XCTAssertEqual(HeroJourney.aliasSideDoor.score(devotion), 0.85 * 0.95, accuracy: 0.0001)
+
+        let trap = [seed(.genre, "atl trap", strength: 0.8)]
+        XCTAssertGreaterThan(HeroJourney.producerChain.score(trap), 0.5)
+
+        let folk = [seed(.genre, "singer-songwriter", strength: 0.7)]
+        XCTAssertGreaterThan(HeroJourney.songwriterShadow.score(folk), 0.5)
+
+        let reggae = [seed(.genre, "roots reggae", strength: 0.7)]
+        XCTAssertGreaterThan(HeroJourney.versionChain.score(reggae), 0.5)
+
+        // Open crate always clears the bar when any seed exists, and every
+        // evidenced journey outranks it.
+        XCTAssertEqual(HeroJourney.openCrate.score(devotion), 0.36)
+        XCTAssertEqual(HeroJourney.openCrate.score([]), 0)
+    }
+
+    func testStoryJourneyPredicates() {
+        // Diaspora: heritage genre carries it, a place seed strengthens it.
+        let latin = [seed(.genre, "latin", strength: 0.8)]
+        let base = HeroJourney.diasporaThread.score(latin)
+        XCTAssertGreaterThan(base, 0.5)
+        let withPlace = latin + [seed(.place, "Mexico", strength: 0.6, node: .photos)]
+        XCTAssertGreaterThan(HeroJourney.diasporaThread.score(withPlace), base)
+
+        let hardcore = [seed(.genre, "post-hardcore", strength: 0.7)]
+        XCTAssertGreaterThan(HeroJourney.splitAndDemo.score(hardcore), 0.5)
+
+        let classical = [seed(.genre, "baroque", strength: 0.7)]
+        XCTAssertGreaterThan(HeroJourney.interpretationChain.score(classical), 0.5)
+
+        // None of the three fire without their genre signal.
+        let soul = [seed(.genre, "retro soul", strength: 0.9)]
+        XCTAssertEqual(HeroJourney.diasporaThread.score(soul), 0)
+        XCTAssertEqual(HeroJourney.splitAndDemo.score(soul), 0)
+        XCTAssertEqual(HeroJourney.interpretationChain.score(soul), 0)
+    }
+
+    func testIdiomMenuCoversEveryJourney() {
+        let menu = HeroJourney.idiomMenu
+        for journey in HeroJourney.allCases {
+            XCTAssertTrue(menu.contains(journey.title), "menu missing \(journey.title)")
+        }
+    }
+
+    func testOpenCrateGuaranteesTheExpeditionRuns() {
+        // A profile with no journey-triggering signal at all: one weak seed.
+        let seeds = [seed(.topic, "vlogging", strength: 0.4, node: .youtube)]
+        let output = BrainTrailBuilder.build(from: seeds)
+        XCTAssertEqual(output.trails.map(\.journey), [.openCrate])
+    }
+
+    func testJourneyBiasPenalizesRecentRoutes() {
+        // "hip hop" fires sourceDNA (0.855), producerChain (0.81), and
+        // contextFlip (0.765). A recent-route penalty on sourceDNA must
+        // demote it from the top slot.
+        let seeds = [seed(.genre, "hip hop", strength: 0.9)]
+        let unbiased = BrainTrailBuilder.build(from: seeds)
+        XCTAssertEqual(unbiased.trails.first?.journey, .sourceDNA)
+
+        let biased = BrainTrailBuilder.build(from: seeds, journeyBias: ["sourceDNA": -0.16])
+        XCTAssertEqual(biased.trails.first?.journey, .producerChain)
+        XCTAssertTrue(biased.trails.contains { $0.journey == .sourceDNA })
+    }
+
     // MARK: - Query hygiene
 
     func testSanitizerSplitsORsAndStripsFakeTags() {
@@ -505,6 +600,32 @@ final class DiggingTests: XCTestCase {
         XCTAssertEqual(dig.pool.first?.title, "Mid")
         XCTAssertEqual(dig.rounds, 1)
         XCTAssertEqual(dig.stopReason, "single round (no delegated agents)")
+    }
+
+    // MARK: - Answer-text salvage
+
+    @MainActor
+    func testSalvageRecoversPicksNamedOnlyInProse() {
+        func poolEntry(_ title: String, _ artist: String) -> DugCandidate {
+            DugCandidate(
+                id: title, trailID: "trail/sourceDNA", journey: .sourceDNA, source: "Spotify",
+                title: title, artist: artist, album: nil, releaseYear: 1974,
+                popularity: 25, url: nil, routeReason: "source-era dig"
+            )
+        }
+        let pool = [
+            poolEntry("Can't Live Without You", "Connie Laverne"),
+            poolEntry("Let Them Talk", "Gwen McCrae"),
+            poolEntry("Moroccan Soul", "Mehdi Yakin"),
+        ]
+        // The observed failure: picks named in prose, empty recommendations array.
+        let text = "Start with Connie Laverne, the buried 1974 soul you actually dig for. Gwen McCrae holds the same heat if the first is spoken for."
+        let salvaged = TasteProfile.salvageCandidates(fromAnswerText: text, pool: pool)
+        XCTAssertEqual(salvaged.map(\.artist), ["Connie Laverne", "Gwen McCrae"])
+        XCTAssertEqual(salvaged.first?.title, "Can't Live Without You")
+
+        // Prose naming nothing from the pool salvages nothing.
+        XCTAssertTrue(TasteProfile.salvageCandidates(fromAnswerText: "The dig came back empty.", pool: pool).isEmpty)
     }
 
     // MARK: - Pool matching keys

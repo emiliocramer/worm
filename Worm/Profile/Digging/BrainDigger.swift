@@ -14,8 +14,9 @@ struct BrainDigger {
     /// Returns an empty array when the catalog is unavailable.
     let searchCatalog: @MainActor (String, Int) async -> [SpotifyTrack]
 
-    /// Hard ceiling on total expedition rounds.
-    var maxRounds = 3
+    /// Hard ceiling on total expedition rounds. Time is not a constraint;
+    /// only the money budget is.
+    var maxRounds = 4
     /// Hard money ceiling per pull, checked between rounds against the ledger.
     var budgetUSD = 0.35
     /// Pool quality bar: this many candidates at or above the score bar,
@@ -59,7 +60,8 @@ struct BrainDigger {
                 rounds: rounds,
                 stopReason: stop,
                 leads: leads,
-                spend: digSpend()
+                spend: digSpend(),
+                recentPicks: memory?.recentPicks
             )
         }
 
@@ -70,22 +72,24 @@ struct BrainDigger {
         }
         emit("Seeds: \(seeds.count) across \(Set(seeds.map(\.sourceNode)).count) nodes.")
 
-        let built = BrainTrailBuilder.build(from: seeds)
+        // Memory shapes the journey ranking both ways: past winners get a
+        // small boost, but journeys surfaced in the last few pulls get a
+        // larger penalty — variety pressure against genre convergence.
+        var bias: [String: Double] = [:]
+        if let memory {
+            for (journey, wins) in memory.journeyWins {
+                bias[journey, default: 0] += 0.05 * Double(min(wins, 4))
+            }
+            for journey in memory.recentJourneys ?? [] {
+                bias[journey, default: 0] -= 0.08
+            }
+        }
+        let built = BrainTrailBuilder.build(from: seeds, journeyBias: bias)
         guard !built.trails.isEmpty else {
             emit("No hero journey cleared the evidence bar (\(BrainTrailBuilder.minimumJourneyScore)).")
             return result(trails: [], effects: [], pool: [], seedCount: seeds.count, rounds: 0, stop: "no trails", leads: [])
         }
-
-        // Memory: journeys that won before rank first; graded leads from past
-        // expeditions seed round 1 so the dig starts from proven ground.
-        var trails = built.trails
-        if let wins = memory?.journeyWins, !wins.isEmpty {
-            trails.sort { lhs, rhs in
-                let l = lhs.confidence + 0.05 * Double(min(wins[lhs.journey.rawValue] ?? 0, 4))
-                let r = rhs.confidence + 0.05 * Double(min(wins[rhs.journey.rawValue] ?? 0, 4))
-                return l > r
-            }
-        }
+        let trails = built.trails
         emit("Trails: " + trails.map { "\($0.journey.title) (\(String(format: "%.2f", $0.confidence)))" }.joined(separator: ", "))
 
         var effects = built.effectNodes

@@ -297,6 +297,15 @@ final class PhotosNode {
     }
 
     func connect() async {
+        if await requestAccess() { await syncEverything() }
+    }
+
+    /// Request photo authorization only, without the follow-on sync. Returns
+    /// whether the node ended up authorized. The feed flow uses this so the
+    /// heavy sync can run in the background instead of blocking the UI;
+    /// `connect()` = this + `syncEverything()`.
+    @discardableResult
+    func requestAccess() async -> Bool {
         lastErrorMessage = nil
         isAuthorizing = true
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
@@ -307,7 +316,7 @@ final class PhotosNode {
         case .authorized, .limited:
             isAuthorized = true
             isLimited = (status == .limited)
-            await syncEverything()
+            return true
         case .denied:
             lastErrorMessage = "Photo access was denied. Enable it in Settings › Privacy & Security › Photos."
         case .restricted:
@@ -317,6 +326,7 @@ final class PhotosNode {
         @unknown default:
             lastErrorMessage = "Unknown photo authorization status."
         }
+        return false
     }
 
     /// Photo-library authorization can only be revoked from iOS Settings, so

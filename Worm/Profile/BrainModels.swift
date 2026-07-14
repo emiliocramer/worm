@@ -8,6 +8,7 @@ enum BrainNodeID: String, Codable, CaseIterable, Hashable, Identifiable {
     case photos
     case calendar
     case selfie
+    case prompts
 
     var id: String { rawValue }
 
@@ -20,6 +21,7 @@ enum BrainNodeID: String, Codable, CaseIterable, Hashable, Identifiable {
         case .photos: return "Photos"
         case .calendar: return "Calendar"
         case .selfie: return "Selfie"
+        case .prompts: return "Prompts"
         }
     }
 }

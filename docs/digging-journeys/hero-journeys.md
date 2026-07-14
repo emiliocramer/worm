@@ -188,6 +188,130 @@ Candidate shape: a track that feels passed along by a real human chain.
 Source trail: 001 cousin Eric and family listening; 003 DJ/producers at Fat Beats
 and Roosevelt Hotel; 005 knowledgeable dealers and DJs; 006 musician memory.
 
+## 13. The Alias & Side Door
+
+Brain signal: durable devotion to a specific artist — a playlist named after
+them, years of plays, an artist the user returns to across ranges.
+
+Dig route: follow the person out the side door of the band. Side projects,
+aliases, anonymous accounts, label-evasion drops, the new single under the
+other name.
+
+Candidate shape: a track by the same person the user loves, filed under a name
+they never searched.
+
+Source trail: 008 Chino Moreno -> Team Sleep / Crosses / Palms; 008 Aphex
+Twin's alias tree and anonymous SoundCloud dumps.
+
+## 14. The Producer Chain
+
+Brain signal: heavy rotation inside a producer-driven scene — trap, drill,
+grime, plugg, modern rap where the beat tag is half the identity.
+
+Dig route: follow the recurring producer behind the favorite tracks into their
+own albums, curation projects, and instrumentals.
+
+Candidate shape: a record the user will love that never appears under a
+rapper's name.
+
+Source trail: 009 Future/21 Savage -> Metro Boomin -> Not All Heroes Wear
+Capes / Heroes & Villains; 006 The Black Keys -> Danger Mouse (the rock
+variant).
+
+## 15. The Songwriter's Shadow
+
+Brain signal: love for written songs — country, folk, singer-songwriter,
+americana; radio hits with a craft spine.
+
+Dig route: follow the writing credit under the famous name into the
+songwriter's own catalog and their version of the hit.
+
+Candidate shape: the writer's own cut — sparer, stranger, usually deeper than
+the famous one.
+
+Source trail: 010 Tim McGraw's "Humble and Kind" -> Lori McKenna -> The Bird
+and the Rifle.
+
+## 16. The Version Chain
+
+Brain signal: reggae, dub, dancehall, ska, rocksteady in the profile — any
+scene built on versioning.
+
+Dig route: find the riddim under a loved tune, then walk every artist who
+voiced it across decades, plus the dubs and recuts.
+
+Candidate shape: the same rhythm wearing a different song.
+
+Source trail: 011 Sound Dimension's "Real Rock" -> a hundred-plus versions
+from Willie Williams onward.
+
+## 17. The Anonymous Drop
+
+Brain signal: comfort with low-promo, low-popularity finds; a digger profile
+that doesn't need the chart's permission.
+
+Dig route: releases that deliberately evade the promo machine — surprise
+drops, anonymous collectives, limited windows, no-name uploads.
+
+Candidate shape: the record everyone finds two years late, found on time.
+
+Source trail: 012 SAULT's five-albums-in-a-day WeTransfer drop and unannounced
+Christmas release.
+
+## 18. The Open Crate
+
+Brain signal: none required. This is the floor, not a pattern — it exists so
+the expedition always runs even when no specific journey clears its evidence
+bar.
+
+Dig route: wherever the taste brief points. The scouts read the whole profile
+and pick the corner.
+
+Candidate shape: anything real, brand new, and defensible through the brief.
+
+Source trail: every entry 001-012 begins as an open crate before a pattern
+emerges.
+
+## 19. The Diaspora Thread
+
+Brain signal: a heritage lineage in the profile — heritage genres (cumbia,
+corridos, banda, salsa, highlife, …), family-coded playlists, places, or a
+read naming childhood-lineage music.
+
+Dig route: the canon that crossed over — what the parents played — and the
+scenes that reworked it (sonideros, revivals, border genres).
+
+Candidate shape: a record that sounds like home and brand new at once.
+
+Source trail: 013 Colombian records in Monterrey -> Sonido Dueñez's broken
+motor -> cumbia rebajada cassettes on the Puente del Papa.
+
+## 20. The Split & Demo
+
+Brain signal: DIY-scene taste — hardcore, punk, metalcore, screamo, grind,
+crust.
+
+Dig route: the format infrastructure. Splits, demos, EPs, comps, tiny label
+pages — buy the split for the band you know, leave with the one you don't.
+
+Candidate shape: the other side of the split; the demo that predates the
+album.
+
+Source trail: 014 split 7-inches as the DIY lingua franca; demos traveling to
+labels by mail; Bandcamp label pages as the modern tape trade.
+
+## 21. The Interpretation Chain
+
+Brain signal: classical taste — a loved work, composer, or performer.
+
+Dig route: the same work under different hands, tempos, and rooms. The artist
+axis inverts: the work stays fixed, the performer is the discovery.
+
+Candidate shape: the reading that disagrees with the famous one.
+
+Source trail: 015 Gould's 1955 vs 1981 Goldberg Variations — same notes,
+different lifetimes.
+
 ## How Worm Should Use These
 
 - Pick a route before picking a song.

@@ -18,6 +18,18 @@ enum HeroJourney: String, Codable, CaseIterable, Hashable, Identifiable {
     case textureRoute
     case albumFirstDig
     case humanCuratorThread
+    // Journeys 13-18, derived from real digging stories 008-012 plus the
+    // always-runs floor. See docs/digging-journeys/hero-journeys.md.
+    case aliasSideDoor
+    case producerChain
+    case songwriterShadow
+    case versionChain
+    case anonymousDrop
+    case openCrate
+    // Journeys 19-21, from sourced stories 013-015.
+    case diasporaThread
+    case splitAndDemo
+    case interpretationChain
 
     var id: String { rawValue }
 
@@ -35,7 +47,50 @@ enum HeroJourney: String, Codable, CaseIterable, Hashable, Identifiable {
         case .textureRoute: return "The Texture Route"
         case .albumFirstDig: return "The Album-First Dig"
         case .humanCuratorThread: return "The Human Curator Thread"
+        case .aliasSideDoor: return "The Alias & Side Door"
+        case .producerChain: return "The Producer Chain"
+        case .songwriterShadow: return "The Songwriter's Shadow"
+        case .versionChain: return "The Version Chain"
+        case .anonymousDrop: return "The Anonymous Drop"
+        case .openCrate: return "The Open Crate"
+        case .diasporaThread: return "The Diaspora Thread"
+        case .splitAndDemo: return "The Split & Demo"
+        case .interpretationChain: return "The Interpretation Chain"
         }
+    }
+
+    /// One-line digging idiom. The Open Crate scout and the foreman see the
+    /// full menu, so every idiom is available to every profile even when its
+    /// evidence gate did not fire — idioms are moves, not claims.
+    var idiom: String {
+        switch self {
+        case .closedDoorArtist: return "skip the obvious artist's hits; enter through producers, side players, and collaborators"
+        case .missedChapter: return "dig the neglected years and labelmates just outside a loved era"
+        case .sourceDNA: return "move backward into the source records a scene samples and repurposes"
+        case .contextFlip: return "find the track that became something else in a new room, country, or scene"
+        case .oneRecordForRightNow: return "search by desired effect before genre; one record for the current state"
+        case .cheapRiskBin: return "simulate the bargain bin: overstock, odd labels, poor sellers, forgotten comps"
+        case .localOddity: return "search from a place outward: regional labels, city scenes, imported sounds"
+        case .ignoredOnlineCrate: return "treat the internet like a messy shop: tiny labels, old uploads, weak metadata"
+        case .liveRoom: return "live versions, radio sessions, archival sets where the band breathes"
+        case .textureRoute: return "search by recording character: tape, room, crackle, remaster clarity"
+        case .albumFirstDig: return "find the album path first, then the entrance track"
+        case .humanCuratorThread: return "follow a trusted person, not a genre"
+        case .aliasSideDoor: return "follow the person out of the band: side projects, aliases, label-evasion drops"
+        case .producerChain: return "follow the beat tag into the producer's own records"
+        case .songwriterShadow: return "follow the writing credit into the songwriter's own catalog"
+        case .versionChain: return "find the riddim under the tune and walk everyone who voiced it"
+        case .anonymousDrop: return "releases that evade the promo machine: surprise drops, anonymous collectives"
+        case .openCrate: return "read the whole brief and pick the corner worth digging"
+        case .diasporaThread: return "follow a heritage lineage: the canon that crossed over and the scenes that reworked it"
+        case .splitAndDemo: return "dig the DIY formats: the other side of the split, the demo before the album"
+        case .interpretationChain: return "same work, different hands: the reading that disagrees with the famous one"
+        }
+    }
+
+    /// The full idiom menu handed to open-ended scouts and the foreman.
+    static var idiomMenu: String {
+        allCases.map { "- \($0.title): \($0.idiom)" }.joined(separator: "\n")
     }
 
     /// Producer credits and person-to-music links have no local proof; these
@@ -60,6 +115,49 @@ enum HeroJourney: String, Codable, CaseIterable, Hashable, Identifiable {
         "hip hop", "hip-hop", "rap", "trip hop", "breakbeat", "drum and bass",
         "house", "techno", "disco", "funk", "soul", "neo soul", "r&b",
         "electronic", "edm", "lo-fi", "lofi", "boom bap", "plunderphonics",
+    ]
+
+    /// Producer-driven scenes where the beat tag is half the identity.
+    static let producerCultureGenres: Set<String> = [
+        "trap", "hip hop", "hip-hop", "rap", "drill", "grime", "plugg",
+        "rage", "cloud rap", "boom bap", "atl", "southern hip hop",
+    ]
+
+    /// Written-song scenes where following the credit lands in a
+    /// songwriter's own catalog.
+    static let songwriterGenres: Set<String> = [
+        "country", "folk", "singer-songwriter", "singer songwriter",
+        "americana", "alt-country", "bluegrass", "nashville",
+    ]
+
+    /// Version-culture scenes built on riddims, dubs, and recuts.
+    static let versionCultureGenres: Set<String> = [
+        "reggae", "dub", "dancehall", "ska", "rocksteady", "roots reggae",
+        "lovers rock",
+    ]
+
+    /// Heritage-lineage genres: music that travels through families and
+    /// migrations rather than charts.
+    static let heritageGenres: Set<String> = [
+        "cumbia", "corridos", "corrido", "banda", "norteño", "norteno",
+        "regional mexican", "mariachi", "ranchera", "bolero", "salsa",
+        "bachata", "merengue", "vallenato", "latin", "musica mexicana",
+        "highlife", "afrobeats", "amapiano", "soukous", "rai", "fado",
+        "rebetiko", "bollywood", "ghazal",
+    ]
+
+    /// DIY-scene genres where splits, demos, and EPs are the discovery format.
+    static let diyGenres: Set<String> = [
+        "hardcore", "punk", "metalcore", "screamo", "emo", "grindcore",
+        "powerviolence", "crust", "d-beat", "death metal", "black metal",
+        "thrash", "sludge", "doom", "post-hardcore", "noise rock",
+    ]
+
+    /// Work-first scenes where the performer is the discovery axis.
+    static let classicalGenres: Set<String> = [
+        "classical", "baroque", "opera", "orchestral", "chamber", "symphony",
+        "early music", "contemporary classical", "romantic era", "choral",
+        "piano", "cello", "violin",
     ]
 
     /// How strongly the local evidence supports this dig pattern, 0...1.
@@ -120,6 +218,43 @@ enum HeroJourney: String, Codable, CaseIterable, Hashable, Identifiable {
             let albums = best(.aesthetic, titled: SignalSeed.albumListener)
             guard albums > 0, best(.label) > 0 else { return 0 }
             return albums
+        case .aliasSideDoor:
+            // A playlist named after an artist is the loudest local devotion
+            // signal there is (the Deftones -> Team Sleep shape).
+            return best(.devotion) * 0.95
+        case .producerChain:
+            return genreMatch(Self.producerCultureGenres, in: seeds) * 0.9
+        case .songwriterShadow:
+            return genreMatch(Self.songwriterGenres, in: seeds) * 0.85
+        case .versionChain:
+            return genreMatch(Self.versionCultureGenres, in: seeds) * 0.9
+        case .anonymousDrop:
+            return best(.aesthetic, titled: SignalSeed.crateDigger) * 0.8
+        case .openCrate:
+            // The floor: barely clears the bar so the expedition always runs,
+            // and every evidenced journey outranks it.
+            return seeds.isEmpty ? 0 : 0.36
+        case .diasporaThread:
+            // Heritage genres carry it; a place seed strengthens the lineage.
+            let heritage = genreMatch(Self.heritageGenres, in: seeds)
+            guard heritage > 0 else { return 0 }
+            let placeAssist = best(.place) > 0 ? 0.05 : 0
+            return min(1, heritage * 0.85 + placeAssist)
+        case .splitAndDemo:
+            return genreMatch(Self.diyGenres, in: seeds) * 0.9
+        case .interpretationChain:
+            return genreMatch(Self.classicalGenres, in: seeds) * 0.9
         }
+    }
+
+    private func genreMatch(_ vocabulary: Set<String>, in seeds: [BrainSeed]) -> Double {
+        var strongest = 0.0
+        for seed in seeds where seed.entityType == .genre {
+            let lower = seed.title.lowercased()
+            if vocabulary.contains(where: { lower.contains($0) }) {
+                strongest = max(strongest, seed.strength)
+            }
+        }
+        return strongest
     }
 }

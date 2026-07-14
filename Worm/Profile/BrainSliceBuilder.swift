@@ -10,6 +10,7 @@ enum BrainSliceBuilder {
         photos: PhotosNode? = nil,
         calendar: CalendarNode? = nil,
         selfie: SelfieNode? = nil,
+        prompts: PromptNode? = nil,
         read: String?,
         insights: [Insight]
     ) -> BrainContext {
@@ -48,6 +49,11 @@ enum BrainSliceBuilder {
             slices.append(selfieSlice(selfie))
         } else {
             slices.append(emptySlice(.selfie))
+        }
+        if let prompts, let slice = prompts.brainSlice() {
+            slices.append(slice)
+        } else {
+            slices.append(emptySlice(.prompts))
         }
         return BrainContext(slices: slices, read: read, insights: insights)
     }
