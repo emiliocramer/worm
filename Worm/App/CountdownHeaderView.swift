@@ -67,12 +67,20 @@ struct CountdownHeaderView: View {
 
     private var availableTitle: some View {
         Button(action: onOpen) {
-            titleStack(eyebrow: "new", value: "ready", valueMonospaced: false)
+            VStack(spacing: 2) {
+                FlickerText(text: "daily food",
+                            font: .system(size: 40, weight: .heavy, design: .serif),
+                            ink: ink)
+                FlickerText(text: "ready",
+                            font: .system(size: 40, weight: .heavy, design: .serif),
+                            ink: ink)
+            }
+            .multilineTextAlignment(.center)
         }
         .buttonStyle(.plain)
         .scaleEffect(pulsing ? 1.035 : 1.0)
         .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
-        .accessibilityLabel("new worm food, ready")
+        .accessibilityLabel("daily food ready")
     }
 
     // MARK: - Shared stacked title
