@@ -90,8 +90,37 @@ final class NodeProgression {
         await scheduler.requestAuthorizationIfNeeded()
     }
 
+    /// Shared keys for the user's chosen daily delivery time (set by the home
+    /// time-of-day picker via @AppStorage).
+    static let deliveryHourKey = "worm.deliveryHour"
+    static let deliveryMinuteKey = "worm.deliveryMinute"
+    static let hasChosenDeliveryTimeKey = "worm.hasChosenDeliveryTime"
+    /// Non-zero only while the Profile dev control is forcing a short delivery
+    /// countdown. Keeping it alongside the delivery settings lets every surface
+    /// (home header and digging log) resolve the same deadline.
+    static let deliveryTestDeadlineKey = "worm.deliveryTestDeadline"
+
+    /// The next wall-clock occurrence of the user's chosen delivery time, or nil
+    /// if they haven't picked one — so unlocks land at "their" time each day.
+    private func nextDeliveryDate() -> Date? {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: Self.hasChosenDeliveryTimeKey) else { return nil }
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: now())
+        comps.hour = defaults.integer(forKey: Self.deliveryHourKey)
+        comps.minute = defaults.integer(forKey: Self.deliveryMinuteKey)
+        guard let today = Calendar.current.date(from: comps) else { return nil }
+        return today > now() ? today : Calendar.current.date(byAdding: .day, value: 1, to: today)
+    }
+
     func arm(hours: Double) {
-        let fireDate = now().addingTimeInterval(hours * 3600)
+        // Real intervals land at the user's chosen time of day; dev fast-forward
+        // (an interval override) still fires after `hours` so it stays testable.
+        let fireDate: Date
+        if devIntervalOverrideHours == nil, let target = nextDeliveryDate() {
+            fireDate = target
+        } else {
+            fireDate = now().addingTimeInterval(hours * 3600)
+        }
         state.nextUnlockAt = fireDate
         state.lastArmDurationHours = hours
         persist()

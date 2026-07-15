@@ -37,4 +37,33 @@ final class UnlockNotificationScheduler: UnlockScheduling {
     func cancel() {
         center.removePendingNotificationRequests(withIdentifiers: [Self.identifier])
     }
+
+    // MARK: - Daily dig
+
+    static let dailyIdentifier = "worm.daily-dig"
+
+    /// The recurring "he's back with songs" nudge: fires every day at the user's
+    /// chosen delivery time. One stable identifier, so re-arming (a new time, a
+    /// renamed worm) replaces rather than stacks. `repeats: true` on a calendar
+    /// trigger keeps it firing daily with no server or re-scheduling needed.
+    func scheduleDailyDig(hour: Int, minute: Int, wormName: String, songCount: Int = 3) {
+        center.removePendingNotificationRequests(withIdentifiers: [Self.dailyIdentifier])
+
+        let content = UNMutableNotificationContent()
+        content.title = "\(wormName) is done digging"
+        content.body = "found you \(songCount) song\(songCount == 1 ? "" : "s"). come check them out."
+        content.sound = .default
+        content.userInfo = ["route": "daily-dig"]
+
+        var components = DateComponents()
+        components.hour = hour
+        components.minute = minute
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        let request = UNNotificationRequest(identifier: Self.dailyIdentifier, content: content, trigger: trigger)
+        center.add(request)
+    }
+
+    func cancelDailyDig() {
+        center.removePendingNotificationRequests(withIdentifiers: [Self.dailyIdentifier])
+    }
 }
