@@ -14,11 +14,21 @@ struct ProfileView: View {
     @Environment(PromptNode.self) private var promptNode
     @Environment(TasteProfile.self) private var profile
     @Environment(NodeProgression.self) private var progression
+    @Environment(\.dismiss) private var dismiss
 
     @State private var isSimulatingFirstInsight = false
     @State private var simulatedFirstInsight: Insight?
-    @State private var isReplayingOnboarding = false
+    @State private var activeCover: ProfileCover?
     @State private var devScheduler = UnlockNotificationScheduler()
+    @AppStorage(NodeProgression.deliveryTestDeadlineKey) private var deliveryTestDeadlineRaw: Double = 0
+
+    /// The full-screen demos launched from this surface. One cover, one enum:
+    /// stacking multiple `.fullScreenCover`s on a single view makes dismissal
+    /// unreliable, so both replay flows share this driver.
+    private enum ProfileCover: String, Identifiable {
+        case onboardingDemo, firstRunHome
+        var id: String { rawValue }
+    }
 
     // Food-visual customization: tap a node's apple to pick its emblem.
     @State private var foodStore = FoodVisualStore.shared
@@ -36,6 +46,7 @@ struct ProfileView: View {
             }
             foodVisualsSection
             nodesSection
+            selfReportsSection
         }
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
@@ -57,9 +68,26 @@ struct ProfileView: View {
         // (no OAuth, template insight), and finishing lands back on home with
         // a demo-only worm name key, so the naming beat replays without
         // touching the real worm's name.
-        .fullScreenCover(isPresented: $isReplayingOnboarding) {
-            OnboardingReplayDemo(onDismiss: { isReplayingOnboarding = false })
+        .fullScreenCover(item: $activeCover) { cover in
+            switch cover {
+            case .onboardingDemo:
+                OnboardingReplayDemo(onDismiss: { activeCover = nil })
+            case .firstRunHome:
+                // The real home, remounted from its first-run state: worm crawls
+                // in, then the time-of-day picker. Uses the real worm/progression,
+                // so it exercises the actual FTUE home, not the ghost-node demo.
+                FirstRunHomeReplay(onDismiss: { activeCover = nil })
+            }
         }
+    }
+
+    /// Reset the first-run gates so home replays from the delivery-time step, then
+    /// present a fresh home. Progression drops back to base and the chosen-time
+    /// flag clears, which is what makes the picker (and the worm's crawl-in) show.
+    private func reloadFirstRunHome() {
+        UserDefaults.standard.removeObject(forKey: NodeProgression.hasChosenDeliveryTimeKey)
+        progression.reset()
+        activeCover = .firstRunHome
     }
 
     // MARK: - Graph Health
@@ -88,10 +116,22 @@ struct ProfileView: View {
             }
             Button {
                 Haptics.impact(.medium)
-                isReplayingOnboarding = true
+                activeCover = .onboardingDemo
             } label: {
                 Label("Replay first run (demo)", systemImage: "play.circle")
             }
+            Button {
+                Haptics.impact(.medium)
+                reloadFirstRunHome()
+            } label: {
+                Label("Reload first time home page", systemImage: "arrow.clockwise.circle")
+            }
+            Button {
+                Task { await readWholeProfile() }
+            } label: {
+                Label(profile.isSynthesizing ? "Reading…" : "Read whole profile", systemImage: "brain")
+            }
+            .disabled(profile.isSynthesizing)
             Button {
                 Task { await simulateFirstInsight() }
             } label: {
@@ -318,6 +358,18 @@ struct ProfileView: View {
                 Label("Jump to cooldown", systemImage: "hourglass")
             }
             Button {
+                startFiveSecondDigTest()
+            } label: {
+                Label("Set dig timer to 5 seconds", systemImage: "timer")
+            }
+            Button {
+                Haptics.impact(.medium)
+                NotificationCenter.default.post(name: .wormForceReveal, object: nil)
+                dismiss()
+            } label: {
+                Label("Reveal today's picks now", systemImage: "sparkles")
+            }
+            Button {
                 Haptics.impact(.light)
                 Task {
                     await devScheduler.requestAuthorizationIfNeeded()
@@ -370,6 +422,19 @@ struct ProfileView: View {
             return formattedInterval(remaining)
         }
         return "none"
+    }
+
+    /// Arms the real waiting-screen countdown for five seconds. The home header
+    /// and digging log read this shared deadline, so no separate demo state is
+    /// needed to exercise the timer-running-out and dig-complete paths.
+    private func startFiveSecondDigTest() {
+        let now = Date()
+        let deadline = now.addingTimeInterval(5)
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: NodeProgression.hasChosenDeliveryTimeKey)
+        defaults.set(now.timeIntervalSinceReferenceDate, forKey: "worm.digStartedAt")
+        deliveryTestDeadlineRaw = deadline.timeIntervalSinceReferenceDate
+        Haptics.impact(.medium)
     }
 
     private var earnedReadout: String {
@@ -469,6 +534,40 @@ struct ProfileView: View {
                 }
             }
         }
+    }
+
+    /// The prompt answers the user has fed directly (lock-screen, ideal-saturday,
+    /// and any dripped prompts). They feed a single "prompts" brain slice, but
+    /// each one shows here so the added nodes aren't invisible.
+    private var selfReportsSection: some View {
+        Section {
+            if promptNode.answers.isEmpty {
+                Text("Nothing yet — feed a prompt apple on home.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(promptNode.answers, id: \.entryID) { answer in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(answer.title)
+                            .font(.subheadline.weight(.semibold))
+                        Text(selfReportValue(answer))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        } header: {
+            Text("Self-reports")
+        } footer: {
+            Text("What you've told the worm directly. Together these feed one \"prompts\" brain slice.")
+        }
+    }
+
+    private func selfReportValue(_ answer: PromptAnswer) -> String {
+        if !answer.text.isEmpty { return answer.text }
+        if !answer.visionKeywords.isEmpty { return answer.visionKeywords.joined(separator: ", ") }
+        return "photo saved"
     }
 
     private var nodesSection: some View {
@@ -711,13 +810,17 @@ struct ProfileView: View {
     // MARK: - Derived State
 
     private var populatedNodeCount: Int {
-        [spotifyIsPopulated, appleMusicIsPopulated, youtubeIsPopulated, contactsIsPopulated, photosIsPopulated, calendarIsPopulated, selfieIsPopulated]
+        [spotifyIsPopulated, appleMusicIsPopulated, youtubeIsPopulated, contactsIsPopulated, photosIsPopulated, calendarIsPopulated, selfieIsPopulated, promptsIsPopulated]
             .filter { $0 }
             .count
     }
 
     private var selfieIsPopulated: Bool {
         selfie.analysis != nil
+    }
+
+    private var promptsIsPopulated: Bool {
+        promptNode.hasAnswers
     }
 
     private var brainStatus: String {
@@ -812,6 +915,13 @@ struct ProfileView: View {
         profile.ingest(context.slices)
     }
 
+    /// Synthesize over every node's slice — the whole taste profile, not just
+    /// Spotify. This is the general read; the Spotify-only path is onboarding.
+    private func readWholeProfile() async {
+        refreshBrainSlices()
+        _ = await profile.synthesize(slices: brainInputs.slices())
+    }
+
     private var brainInputs: BrainInputSet {
         BrainInputSet(
             spotify: spotify,
@@ -836,6 +946,38 @@ struct ProfileView: View {
             selfie: selfie
         )
         refreshBrainSlices()
+    }
+}
+
+/// The real first-run home, remounted. A fresh `WormHomeView` (so it replays the
+/// forest build + worm crawl) on the real worm-name key; with the delivery-time
+/// flag cleared beforehand, it lands on the time-of-day picker just like FTUE.
+private struct FirstRunHomeReplay: View {
+    let onDismiss: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            WormHomeView(buildsForestOnEntry: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topLeading) {
+            Button {
+                onDismiss()
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.76))
+                    .frame(width: 44, height: 44)
+                    .liquidGlass(in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close first-run home")
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .zIndex(10)
+        }
     }
 }
 

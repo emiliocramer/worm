@@ -1,5 +1,15 @@
 import SwiftUI
 import UIKit
+import Combine
+
+/// A resolved pick to reveal: title, artist, and the exact album-artwork URL
+/// (resolved from the catalog so the cover can never mismatch the song). `artwork`
+/// nil = no cover found → show a placeholder rather than a wrong image.
+struct FoundSong: Codable, Hashable {
+    let title: String
+    let artist: String
+    let artwork: String?
+}
 
 /// Home. A quiet forest clearing, and the worm — at the size he's earned —
 /// crawling in from offscreen left onto its moss bed.
@@ -13,11 +23,49 @@ struct WormHomeView: View {
     @Environment(PhotosNode.self) private var photos
     @Environment(ContactsNode.self) private var contacts
     @Environment(CalendarNode.self) private var calendar
+    @Environment(SelfieNode.self) private var selfie
     @Environment(PromptNode.self) private var promptNode
     @Environment(TasteProfile.self) private var profile
     @Environment(NodeProgression.self) private var progression
     @AppStorage private var wormName: String
     @AppStorage("worm.askedNotificationPermission") private var askedNotificationPermission = false
+    // The daily delivery time the user picks in the step before the base flow.
+    @AppStorage(NodeProgression.hasChosenDeliveryTimeKey) private var hasChosenDeliveryTime = false
+    @AppStorage(NodeProgression.deliveryHourKey) private var deliveryHour = 20
+    @AppStorage(NodeProgression.deliveryMinuteKey) private var deliveryMinute = 0
+    @AppStorage(NodeProgression.deliveryTestDeadlineKey) private var deliveryTestDeadlineRaw: Double = 0
+    // The delivery-time wheel's live selection (defaults to 8:00 pm).
+    @State private var pickerHour12 = 8
+    @State private var pickerMinute = 0
+    @State private var pickerIsPM = true
+    /// Continuous hour24 the picker reports as it scrolls; drives the live sky and
+    /// the adaptive foreground ink. Defaults to the 8:00 pm wheel start.
+    @State private var pickerLiveTime: Double = 20
+    /// Schedules the recurring daily "he's back with songs" notification.
+    @State private var digScheduler = UnlockNotificationScheduler()
+    /// Shown only once the worm has crawled in and settled (driven by the
+    /// entrance/reveal sequence), never during the crawl.
+    /// The post-time-set home flow (journey-off base state): pick a time → explain
+    /// + ask for notifications → "done, see you at ___" → the waiting/digging
+    /// screen with its "i'll be back in Hh:Mm" countdown. `nil` = not in the flow.
+    @State private var deliveryFlow: DeliveryFlowStep?
+    /// The fixed target the current dig counts down to (captured on entering
+    /// `.waiting`, so the clock actually reaches zero instead of rolling to tomorrow).
+    @State private var cycleDeadline: Date?
+    /// Shared with `DiggingLogView` — clearing it starts a fresh dig cycle.
+    @AppStorage("worm.digStartedAt") private var digStartRaw: Double = 0
+    /// The upcoming cycle's picks, fetched from the backend (which digs a day
+    /// ahead) and cached locally so the reveal at the delivery moment needs no
+    /// network. Revealed when the countdown reaches the reveal date.
+    @State private var digRecs: [FoundSong] = []
+    /// Guards against overlapping backend syncs.
+    @State private var digSyncing = false
+    /// The reveal date (YYYY-MM-DD) the cached `digRecs` belong to.
+    @AppStorage("worm.digRevealDate") private var digRevealDate: String = ""
+    /// The last reveal date actually shown, so we don't re-reveal a batch after the
+    /// user taps "continue" while the next slot is still being filled server-side.
+    @AppStorage("worm.lastRevealedDate") private var lastRevealedDate: String = ""
+    @Environment(\.scenePhase) private var scenePhase
     @FocusState private var nameFieldFocused: Bool
 
     /// Entrance clock: nil until this appearance's crawl begins.
@@ -83,9 +131,11 @@ struct WormHomeView: View {
     @State private var hasPlayedEntrance = false
     @State private var homeControlsVisible: Bool
     @State private var forestBuildTask: Task<Void, Never>?
+    @State private var showHiddenProfile = false
 
     private enum MorselPhase { case offscreen, hovering, fed, gone }
     private enum NamingStep { case intro, entry }
+    private enum DeliveryFlowStep { case picker, notify, done, waiting, arrived }
 
     private let paper = Color(red: 0.97, green: 0.96, blue: 0.93)
     private let ink = Color.black
@@ -109,6 +159,14 @@ struct WormHomeView: View {
         _wormName = AppStorage(wrappedValue: "", wormNameKey)
         _forestBuildProgress = State(initialValue: buildsForestOnEntry ? 0 : 1)
         _homeControlsVisible = State(initialValue: !buildsForestOnEntry)
+        let name = UserDefaults.standard.string(forKey: wormNameKey) ?? ""
+        let hasNamedWorm = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasChosenDelivery = UserDefaults.standard.bool(forKey: NodeProgression.hasChosenDeliveryTimeKey)
+        // Resolve an already-running dig before `body` first evaluates. Waiting
+        // until `onAppear` lets the home worm and its tag render for one frame.
+        _deliveryFlow = State(initialValue:
+            !DevFlags.dailyFoodJourneyEnabled && hasNamedWorm && hasChosenDelivery ? .waiting : nil
+        )
     }
 
     var body: some View {
@@ -127,8 +185,10 @@ struct WormHomeView: View {
                 // it so this handoff can never expose the window backing color.
                 paper.ignoresSafeArea()
 
-                ForestHomeBackdrop(buildProgress: forestBuildProgress)
-                    .ignoresSafeArea()
+                if DevFlags.sceneEnabled {
+                    ForestHomeBackdrop(buildProgress: forestBuildProgress)
+                        .ignoresSafeArea()
+                }
 
                 ZStack {
                     HomeWorm(
@@ -146,13 +206,28 @@ struct WormHomeView: View {
                     )
                     .ignoresSafeArea(.keyboard, edges: .bottom)
                     // Stay sharp above the detail blur when an apple is expanded.
-                    .zIndex((expandedEntry != nil || baseCompleteVisible) ? 4 : 0)
+                    .zIndex((expandedEntry != nil || baseCompleteVisible || isDeliveryFlowActive) ? 4 : 0)
+                    // On the waiting screen the worm is away digging — he's gone,
+                    // the log terminal takes the screen.
+                    .opacity(isWaiting ? 0 : 1)
+                    .allowsHitTesting(!isWaiting)
+                    .animation(.easeInOut(duration: 0.5), value: isWaiting)
 
-                    ForestHomeForeground(buildProgress: forestBuildProgress)
-                        .ignoresSafeArea()
+                    // The living digging log — the waiting-screen background.
+                    if isWaiting {
+                        DiggingLogView(deliveryHour: deliveryHour, deliveryMinute: deliveryMinute)
+                            .transition(.opacity)
+                            .zIndex(2)
+                    }
+
+                    if DevFlags.sceneEnabled {
+                        ForestHomeForeground(buildProgress: forestBuildProgress)
+                            .ignoresSafeArea()
+                    }
 
                     if nameTagVisible,
                        let displayName = wormDisplayName,
+                       !isWaiting,
                        !isNamingFlowActive,
                        !namingHandoffVisible {
                         HomeWormNameTag(
@@ -169,7 +244,7 @@ struct WormHomeView: View {
                             paper: paper
                         )
                         .transition(.nameTagPop)
-                        .zIndex((expandedEntry != nil || baseCompleteVisible) ? 4 : 1)
+                        .zIndex((expandedEntry != nil || baseCompleteVisible || isDeliveryFlowActive) ? 4 : 1)
                         .allowsHitTesting(false)
                     }
 
@@ -186,8 +261,10 @@ struct WormHomeView: View {
                     }
 
                     // Base phase: a few prominent apples scattered in the trees,
-                    // fed in any order, no countdown until the last one lands.
-                    if progression.isBasePhase, !isNamingFlowActive {
+                    // fed in a fixed order — only the first un-fed apple is live,
+                    // each unlocking the next; no countdown until the last one lands.
+                    if DevFlags.dailyFoodJourneyEnabled,
+                       progression.isBasePhase, !isNamingFlowActive, hasChosenDeliveryTime {
                         ForEach(progression.pendingBaseEntries) { entry in
                             if entry.id != consumingBaseID, entry.id != expandedEntry?.id,
                                revealedBaseIDs.contains(entry.id) {
@@ -348,7 +425,143 @@ struct WormHomeView: View {
                         .zIndex(6)
                     }
 
-                    if !isNamingFlowActive, let morsel, morselPhase == .hovering || morselPhase == .fed {
+                    // The delivery flow's living sky sits behind every step — the
+                    // picker, the notification ask, the "done" beat, and (for now)
+                    // the waiting screen. Its color + the sun/moon track the chosen
+                    // time; the worm and copy read as UI in front of it.
+                    if showDeliveryBackdrop {
+                        DeliveryTimeBackdrop(time: pickerLiveTime)
+                            .transition(.opacity)
+                            .zIndex(3)
+                    }
+
+                    // Step 1 — the time wheel.
+                    if deliveryFlow == .picker {
+                        DeliveryTimePicker(
+                            wormName: wormDisplayName ?? "your worm",
+                            hour12: $pickerHour12,
+                            minute: $pickerMinute,
+                            isPM: $pickerIsPM,
+                            onLiveTime: { pickerLiveTime = $0 }
+                        )
+                        .frame(maxWidth: 340)
+                        .position(x: W / 2, y: H * 0.24)
+                        .transition(.opacity)
+                        .zIndex(5)
+
+                        Button {
+                            confirmDeliveryTime()
+                        } label: {
+                            Text("that's it")
+                                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                .foregroundStyle(DeliveryTimeBackdrop.onForeground(at: pickerLiveTime))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(DeliveryTimeBackdrop.foreground(at: pickerLiveTime), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: 300)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 14)
+                        .transition(.opacity)
+                        .zIndex(6)
+                        .animation(.easeInOut(duration: 0.3), value: pickerLiveTime)
+                    }
+
+                    // Step 2 — explain, then ask for notifications in context.
+                    if deliveryFlow == .notify {
+                        deliveryInterstitialCopy(
+                            title: "want a nudge when I'm done?",
+                            body: "I'll be digging to find you music until \(deliveryClockString).",
+                            at: CGPoint(x: W / 2, y: H * 0.30)
+                        )
+                        .zIndex(5)
+
+                        VStack(spacing: 12) {
+                            filledCTA("notify me") {
+                                Haptics.success()
+                                notifyThenContinue()
+                            }
+                            Button {
+                                Haptics.impact(.light)
+                                skipNotify()
+                            } label: {
+                                Text("not now")
+                                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                                    .foregroundStyle(DeliveryTimeBackdrop.foreground(at: pickerLiveTime).opacity(0.6))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .frame(maxWidth: 300)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 14)
+                        .transition(.opacity)
+                        .zIndex(6)
+                    }
+
+                    // Step 3 — "done. see you at ___", then it eases into waiting.
+                    if deliveryFlow == .done {
+                        deliveryInterstitialCopy(
+                            title: "done.",
+                            body: "see you at \(deliveryClockString)",
+                            at: CGPoint(x: W / 2, y: H * 0.30)
+                        )
+                        .zIndex(5)
+                    }
+
+                    // Dig complete — the worm's home with what he found.
+                    if deliveryFlow == .arrived {
+                        VStack(spacing: 18) {
+                            VStack(spacing: 6) {
+                                Text("\(wormDisplayName ?? "he")'s back")
+                                    .font(.system(size: 30, weight: .bold, design: .serif))
+                                    .foregroundStyle(ink)
+                                Text("dug you up 3 songs")
+                                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                                    .foregroundStyle(ink.opacity(0.6))
+                            }
+                            VStack(spacing: 8) {
+                                ForEach(Array(foundSongs.enumerated()), id: \.offset) { _, song in
+                                    HStack(spacing: 12) {
+                                        songArtwork(song)
+                                            .frame(width: 46, height: 46)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(ink.opacity(0.1)))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(song.title)
+                                                .font(.system(size: 16, weight: .semibold, design: .serif))
+                                                .foregroundStyle(ink)
+                                                .lineLimit(1)
+                                            Text(song.artist)
+                                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                                .foregroundStyle(ink.opacity(0.55))
+                                                .lineLimit(1)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ink.opacity(0.05)))
+                                }
+                            }
+                            .frame(maxWidth: 300)
+                        }
+                        .frame(maxWidth: 340)
+                        .position(x: W / 2, y: H * 0.34)
+                        .transition(.opacity)
+                        .zIndex(5)
+
+                        filledCTA("see you tomorrow") { continueAfterArrival() }
+                            .frame(maxWidth: 300)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            .padding(.bottom, 14)
+                            .transition(.opacity)
+                            .zIndex(6)
+                    }
+
+                    if DevFlags.dailyFoodJourneyEnabled,
+                       !isNamingFlowActive, let morsel, morselPhase == .hovering || morselPhase == .fed {
                         let fed = morselPhase == .fed
                         let flight = fed ? morselFlight : 0
                         let bite = Self.smoothstep(0.68, 1, Double(flight))
@@ -388,7 +601,12 @@ struct WormHomeView: View {
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay(alignment: .top) {
-            if !isNamingFlowActive, !namingHandoffVisible, homeControlsVisible {
+            if isWaiting, homeControlsVisible {
+                waitingHeader
+                    .offset(y: 100)
+                    .transition(.opacity)
+            } else if DevFlags.dailyFoodJourneyEnabled,
+               !isNamingFlowActive, !namingHandoffVisible, homeControlsVisible {
                 Group {
                     if progression.isBasePhase {
                         // Sit where the countdown's "daily food ready" line sits, so
@@ -420,20 +638,17 @@ struct WormHomeView: View {
         }
         .overlay(alignment: .topTrailing) {
             if homeControlsVisible, !isNamingFlowActive, !namingHandoffVisible {
-                NavigationLink(value: NodeRoute.profile) {
-                    Image(systemName: "person.crop.circle")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.76))
-                        .frame(width: 44, height: 44)
-                        .liquidGlass(in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Profile")
+                // Intentionally invisible: double-tap the top-right corner to open
+                // the profile without adding chrome to the forest or waiting log.
+                Color.clear
+                    .frame(width: 72, height: 72)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        showHiddenProfile = true
+                    }
+                    .accessibilityHidden(true)
                 .padding(.horizontal, 20)
                 .padding(.top, 6)
-                .opacity(homeChromeVisible ? 1 : 0)
-                .animation(.easeInOut(duration: 0.3), value: homeChromeVisible)
-                .allowsHitTesting(homeChromeVisible)
             }
         }
         .overlay(alignment: .bottom) {
@@ -463,6 +678,33 @@ struct WormHomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .wormUnlockTapped)) { _ in
             Task { await presentNextMorsel() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wormForceReveal)) { _ in
+            forceRevealTodayNow()
+        }
+        // On entering the waiting screen: pin the cycle start + deadline, restore any
+        // finished dig, and kick the real recommendation query off in the background
+        // so its picks are ready to reveal when the timer completes.
+        .onChange(of: deliveryFlow) { _, step in
+            if step == .waiting {
+                if digStartRaw == 0 { digStartRaw = Date().timeIntervalSinceReferenceDate }
+                loadCachedRecsIntoState()
+                cycleDeadline = cycleDeliveryDate()
+                syncFromBackend()
+            }
+        }
+        // Self-heal: on foreground, re-pull the upcoming batch so a long-open app
+        // still picks up the next day's slot without a relaunch.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, deliveryFlow == .waiting { syncFromBackend() }
+        }
+        // Tick: when the countdown reaches the reveal moment, arrive (the batch is
+        // already cached locally, so the reveal needs no network).
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            if deliveryFlow == .waiting, let d = cycleDeadline, Date() >= d { arriveHome() }
+        }
+        .navigationDestination(isPresented: $showHiddenProfile) {
+            ProfileView()
         }
         .fullScreenCover(item: $capturingEntry) { entry in
             PromptCaptureView(
@@ -547,7 +789,7 @@ struct WormHomeView: View {
         VStack(spacing: 12) {
             Spacer().frame(height: height * 0.25)
 
-            Text("\(name).")
+            Text("hi \(name).")
                 .font(.system(size: 30, weight: .semibold, design: .rounded))
                 .foregroundStyle(ink.opacity(0.9))
 
@@ -577,6 +819,69 @@ struct WormHomeView: View {
 
     private var namingButtonBottomPadding: CGFloat {
         keyboardHeight > 0 ? keyboardHeight + 4 : 24
+    }
+
+    // MARK: - Delivery flow UI
+
+    /// The waiting-screen top header: "i'll be back in Hh:Mm", counting down to the
+    /// next daily visit. Ticks each second; colors adapt to the sky behind it.
+    private var waitingHeader: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            VStack(spacing: 4) {
+                Text("I'll be back in")
+                    .font(.system(size: 22, weight: .semibold, design: .serif))
+                    .foregroundStyle(ink.opacity(0.8))
+                Text(timeUntilDeliveryString)
+                    .font(.system(size: 46, weight: .heavy, design: .serif))
+                    .monospacedDigit()
+                    .foregroundStyle(ink)
+            }
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 12)
+            // A soft paper cushion (blurred, no hard edge) so the copy reads cleanly
+            // over the running log beneath it.
+            .background {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(paper)
+                    .blur(radius: 14)
+                    .padding(4)
+            }
+        }
+    }
+
+    /// A centered title + body for the notification-ask and "done" interstitials,
+    /// in the same adaptive ink as the rest of the delivery flow.
+    private func deliveryInterstitialCopy(title: String, body: String, at point: CGPoint) -> some View {
+        let fg = DeliveryTimeBackdrop.foreground(at: pickerLiveTime)
+        let halo = DeliveryTimeBackdrop.onForeground(at: pickerLiveTime)
+        return VStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: 32, weight: .bold, design: .serif))
+                .foregroundStyle(fg)
+                .shadow(color: halo.opacity(0.45), radius: 5)
+            Text(body)
+                .font(.system(size: 16, weight: .medium, design: .rounded))
+                .foregroundStyle(fg.opacity(0.82))
+                .shadow(color: halo.opacity(0.4), radius: 4)
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 320)
+        .position(point)
+        .transition(.opacity)
+    }
+
+    /// The shared filled pill CTA used in the delivery flow (adaptive fill + label).
+    private func filledCTA(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(DeliveryTimeBackdrop.onForeground(at: pickerLiveTime))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(DeliveryTimeBackdrop.foreground(at: pickerLiveTime), in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Base phase
@@ -649,6 +954,16 @@ struct WormHomeView: View {
     private func beginHomePresentation() {
         forestBuildTask?.cancel()
 
+        // The dig is already in progress: the log owns the first visible frame.
+        // Do not begin the forest/worm entrance behind it, even transiently.
+        if isWaiting {
+            forestBuildProgress = 1
+            homeControlsVisible = true
+            entranceStart = nil
+            nameTagVisible = false
+            return
+        }
+
         // Second and later appearances this session (popping back from profile or
         // a node detail): the scene is already established. Snap it to its settled
         // state — worm resting, food/copy already present — with no replay.
@@ -717,6 +1032,22 @@ struct WormHomeView: View {
         resetNamingFlowIfNeeded()
         nameTagVisible = wormDisplayName != nil
 
+        // Journey gated off: the base state is the waiting/digging screen (if a
+        // time's been set), otherwise nothing yet.
+        guard DevFlags.dailyFoodJourneyEnabled else {
+            morsel = nil
+            morselPhase = .offscreen
+            revealedBaseIDs = []
+            if hasChosenDeliveryTime {
+                pickerLiveTime = deliveryTimeAsHours
+                ensureDailyDigScheduled()   // keep the daily nudge armed on launch
+                deliveryFlow = .waiting
+            } else {
+                deliveryFlow = nil
+            }
+            return
+        }
+
         if progression.isBasePhase {
             morsel = nil
             morselPhase = .offscreen
@@ -750,7 +1081,19 @@ struct WormHomeView: View {
         digestCaption = nil
         wormWiggles = []
         nameTagVisible = false
+        deliveryFlow = nil
         resetNamingFlowIfNeeded()
+
+        // Already set up and waiting (journey off, time chosen, named): the worm is
+        // out digging, so skip the crawl and drop straight into the waiting log.
+        if !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime, hasWormName {
+            let settledAgo = wormEntranceDelay + wormEntranceDuration + wormEntranceSettleDuration + 1
+            entranceStart = Date().timeIntervalSinceReferenceDate - settledAgo
+            pickerLiveTime = deliveryTimeAsHours
+            ensureDailyDigScheduled()
+            withAnimation(.easeInOut(duration: 0.5)) { deliveryFlow = .waiting }
+            return
+        }
 
         Task {
             try? await Task.sleep(for: .seconds(wormEntranceDelay))
@@ -780,8 +1123,27 @@ struct WormHomeView: View {
     }
 
     /// After the worm has settled (and been named), reveal whatever the current
-    /// phase offers: the scattered base apples, or the single drip morsel.
+    /// phase offers: the delivery-time picker, the waiting screen, the scattered
+    /// base apples, or the single drip morsel.
     private func revealFoodForCurrentPhase() async {
+        // First run: no delivery time yet — the worm has settled, now raise the
+        // time-of-day step.
+        if !hasChosenDeliveryTime {
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.45)) { deliveryFlow = .picker }
+            }
+            return
+        }
+        // Journey gated off: the base state is the waiting/digging screen, with the
+        // sky frozen at the chosen time.
+        guard DevFlags.dailyFoodJourneyEnabled else {
+            await MainActor.run {
+                pickerLiveTime = deliveryTimeAsHours
+                ensureDailyDigScheduled()   // keep the daily nudge armed on launch
+                withAnimation(.easeInOut(duration: 0.55)) { deliveryFlow = .waiting }
+            }
+            return
+        }
         if progression.isBasePhase {
             // Pop the apples into the trees one at a time so they arrive as a
             // little scatter, not a single simultaneous appearance.
@@ -881,9 +1243,350 @@ struct WormHomeView: View {
     }
 
     /// The top header + profile button are visible only in the plain home state —
-    /// hidden while an apple detail or the foundation-complete moment is up.
+    /// hidden while an apple detail, the delivery-time step, or the
+    /// foundation-complete moment is up.
     private var homeChromeVisible: Bool {
-        expandedEntry == nil && !baseCompleteVisible
+        expandedEntry == nil
+            && !baseCompleteVisible
+            && !isDeliveryInterstitial
+            && deliveryFlow != .arrived
+            // In the base phase the header/profile only belong to the base flow,
+            // which starts AFTER the delivery-time step — never before it.
+            && (!progression.isBasePhase || hasChosenDeliveryTime)
+    }
+
+    /// The time-of-day sky sits behind the picker/notify/done steps only (and only
+    /// when the scene is enabled). It crossfades out as we cross into the waiting
+    /// screen (which is plain paper under the living digging background instead).
+    private var showDeliveryBackdrop: Bool {
+        DevFlags.deliveryTimeSceneEnabled && isDeliveryInterstitial
+    }
+
+    /// Any step of the delivery flow is active (keeps the worm sharp in front).
+    private var isDeliveryFlowActive: Bool { deliveryFlow != nil }
+
+    /// The full-screen interstitials that take over the scene (chrome hidden).
+    private var isDeliveryInterstitial: Bool {
+        deliveryFlow == .picker || deliveryFlow == .notify || deliveryFlow == .done
+    }
+
+    /// The base state: worm home, waiting for the next daily visit.
+    private var isWaiting: Bool { deliveryFlow == .waiting }
+
+    private var pickerHour24: Int {
+        let base = pickerHour12 % 12
+        return pickerIsPM ? base + 12 : base
+    }
+
+    /// Save the chosen delivery time, then move into the contextual notification
+    /// ask (journey off) or the base-apple flow (journey on).
+    private func confirmDeliveryTime() {
+        deliveryHour = pickerHour24
+        deliveryMinute = pickerMinute
+        Haptics.success()
+        hasChosenDeliveryTime = true
+
+        guard DevFlags.dailyFoodJourneyEnabled else {
+            // Arm the recurring daily notification for the chosen time now; the
+            // permission prompt comes next in the .notify step.
+            ensureDailyDigScheduled()
+            // The time is set: this is the natural moment to explain the daily
+            // visit and ask for a nudge. Notifications only make sense now.
+            withAnimation(.easeInOut(duration: 0.45)) { deliveryFlow = .notify }
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.45)) { deliveryFlow = nil }
+        Task {
+            try? await Task.sleep(for: .seconds(0.35))
+            await revealFoodForCurrentPhase()   // now pops the base apples in
+        }
+    }
+
+    /// "notify me": request permission in context, then land the "done" beat.
+    private func notifyThenContinue() {
+        askedNotificationPermission = true
+        Task {
+            await progression.requestNotificationPermission()
+            await MainActor.run { goToDoneThenWaiting() }
+        }
+    }
+
+    /// "not now": no permission prompt, straight to the "done" beat.
+    private func skipNotify() {
+        askedNotificationPermission = true
+        goToDoneThenWaiting()
+    }
+
+    /// Show "done. see you at ___" for a beat, then ease into the waiting screen.
+    private func goToDoneThenWaiting() {
+        withAnimation(.easeInOut(duration: 0.4)) { deliveryFlow = .done }
+        Task {
+            try? await Task.sleep(for: .seconds(2.0))
+            await MainActor.run {
+                pickerLiveTime = deliveryTimeAsHours
+                withAnimation(.easeInOut(duration: 0.7)) { deliveryFlow = .waiting }
+            }
+        }
+    }
+
+    /// The clock hit the reveal moment. The worm comes home and shows the batch
+    /// that was already dug (a day ahead) and cached locally. Records which reveal
+    /// date was shown so we don't replay it after "continue".
+    private func arriveHome() {
+        guard deliveryFlow == .waiting else { return }
+        if !digRevealDate.isEmpty { lastRevealedDate = digRevealDate }
+        Haptics.success()
+        withAnimation(.easeInOut(duration: 0.7)) { deliveryFlow = .arrived }
+    }
+
+    /// Dismiss the reveal and wait for the next slot: clear the shown batch + test
+    /// deadline, count down to the next delivery, and re-sync (the server fills the
+    /// next day's slot right after this delivery time).
+    private func continueAfterArrival() {
+        Haptics.impact(.medium)
+        deliveryTestDeadlineRaw = 0
+        digStartRaw = 0
+        digRecs = []
+        digRevealDate = ""
+        UserDefaults.standard.removeObject(forKey: Self.digRecsKey)
+        cycleDeadline = cycleDeliveryDate()
+        ensureDailyDigScheduled()
+        withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .waiting }
+    }
+
+    /// The three songs to reveal: the cached upcoming picks (with exact covers) once
+    /// they've landed, otherwise placeholders until the fetch finishes.
+    private var foundSongs: [FoundSong] {
+        if !digRecs.isEmpty { return Array(digRecs.prefix(3)) }
+        return DiggingLog.finds(seed: UInt64(bitPattern: Int64(max(0, digStartRaw).rounded())))
+            .map { FoundSong(title: $0.title, artist: $0.artist, artwork: nil) }
+    }
+
+    /// The exact album cover for a pick, or a music-note placeholder when none was
+    /// resolved (never a mismatched image).
+    @ViewBuilder
+    private func songArtwork(_ song: FoundSong) -> some View {
+        if let s = song.artwork, let url = URL(string: s) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    artworkPlaceholder
+                }
+            }
+        } else {
+            artworkPlaceholder
+        }
+    }
+
+    private var artworkPlaceholder: some View {
+        ZStack {
+            Rectangle().fill(ink.opacity(0.06))
+            Image(systemName: "music.note")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ink.opacity(0.4))
+        }
+    }
+
+    // MARK: - The real recommendation dig (runs during the wait)
+
+    private struct CachedDigRecs: Codable {
+        let revealDate: String
+        let recs: [FoundSong]
+    }
+    private static let digRecsKey = "worm.digRecs"
+
+    private func loadCachedRecs() -> CachedDigRecs? {
+        guard let data = UserDefaults.standard.data(forKey: Self.digRecsKey) else { return nil }
+        return try? JSONDecoder().decode(CachedDigRecs.self, from: data)
+    }
+
+    private func loadCachedRecsIntoState() {
+        if let c = loadCachedRecs(), !digRevealDate.isEmpty, c.revealDate == digRevealDate {
+            digRecs = c.recs
+        }
+    }
+
+    /// Map + sort a backend batch to the reveal's `FoundSong`s (top 3, exact covers).
+    private func songs(from recs: [WormAPI.TodayRec]) -> [FoundSong] {
+        recs.sorted { $0.rank < $1.rank }.prefix(3).map {
+            FoundSong(title: $0.title, artist: $0.artist, artwork: $0.artworkUrl)
+        }
+    }
+
+    /// Push the current profile to the backend and pull the upcoming (a-day-ahead)
+    /// batch. The dig runs server-side on schedule; here we keep the server's copy
+    /// current, and if no upcoming slot exists yet (fresh setup) we fill it now.
+    /// The result is cached locally so the reveal at the delivery moment is instant.
+    private func syncFromBackend() {
+        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
+        if digSyncing { return }
+        digSyncing = true
+
+        // Reduce the live profile to compact nodes + text slices for upload (no raw data).
+        let context = brainInputs.context(read: profile.read, insights: profile.insights)
+        let textSlices = context.populatedSlices
+            .filter { !$0.summary.isEmpty }
+            .map { WormAPI.TextSlice(node: $0.nodeID.rawValue, summary: $0.summary) }
+        let nodes = buildWormNodes()
+        let hour = deliveryHour, minute = deliveryMinute
+        let name = wormDisplayName
+        let refreshToken = spotify.currentRefreshToken
+
+        Task {
+            await WormAPI.putProfile(deliveryHour: hour, deliveryMinute: minute, wormName: name, nodes: nodes, textSlices: textSlices)
+            if let refreshToken { await WormAPI.postSpotifySource(refreshToken: refreshToken) }
+
+            var resp = await WormAPI.fetchToday()
+            if resp == nil || !(resp?.ready ?? false) {
+                // No upcoming slot computed yet (fresh setup) — fill it now.
+                if let run = await WormAPI.triggerDig(), let recs = run.recommendations, !recs.isEmpty {
+                    resp = WormAPI.TodayResponse(
+                        ready: true, cycleDate: run.cycleDate,
+                        deliveryHour: hour, deliveryMinute: minute, recommendations: recs
+                    )
+                }
+            }
+            await MainActor.run {
+                applyToday(resp)
+                digSyncing = false
+            }
+        }
+    }
+
+    /// Apply a fetched batch: cache it and set the countdown to its reveal moment.
+    /// A batch we've already shown (`lastRevealedDate`) isn't replayed — we just
+    /// keep counting to the next delivery until the server produces the next slot.
+    private func applyToday(_ resp: WormAPI.TodayResponse?) {
+        guard let resp, resp.ready, let cd = resp.cycleDate, !resp.recommendations.isEmpty else { return }
+        let date = String(cd.prefix(10))
+
+        if date == lastRevealedDate {
+            if deliveryTestDeadlineRaw == 0 { cycleDeadline = localNextDelivery(after: Date()) }
+            return
+        }
+
+        digRecs = songs(from: resp.recommendations)
+        digRevealDate = date
+        if let data = try? JSONEncoder().encode(CachedDigRecs(revealDate: date, recs: digRecs)) {
+            UserDefaults.standard.set(data, forKey: Self.digRecsKey)
+        }
+        // Dev test deadline (5s) overrides the real reveal moment.
+        if deliveryTestDeadlineRaw == 0, let moment = revealMoment(forDate: date) {
+            cycleDeadline = moment
+            if Date() >= moment, deliveryFlow == .waiting { arriveHome() }   // already due
+        }
+    }
+
+    /// Dev-only: fetch the latest server batch and jump straight to the reveal,
+    /// bypassing the countdown and the already-shown guard. Fills a slot first if
+    /// none exists yet.
+    private func forceRevealTodayNow() {
+        digRecs = []
+        digRevealDate = ""
+        UserDefaults.standard.removeObject(forKey: Self.digRecsKey)
+        cycleDeadline = Date()
+        withAnimation(.easeInOut(duration: 0.4)) { deliveryFlow = .waiting }
+
+        Task {
+            var resp = await WormAPI.fetchToday()
+            if resp == nil || !(resp?.ready ?? false) {
+                if let run = await WormAPI.triggerDig(), let recs = run.recommendations, !recs.isEmpty {
+                    resp = WormAPI.TodayResponse(
+                        ready: true, cycleDate: run.cycleDate,
+                        deliveryHour: deliveryHour, deliveryMinute: deliveryMinute, recommendations: recs
+                    )
+                }
+            }
+            await MainActor.run {
+                if let resp, let cd = resp.cycleDate, !resp.recommendations.isEmpty {
+                    digRecs = songs(from: resp.recommendations)
+                    digRevealDate = String(cd.prefix(10))
+                    lastRevealedDate = digRevealDate
+                    if let data = try? JSONEncoder().encode(CachedDigRecs(revealDate: digRevealDate, recs: digRecs)) {
+                        UserDefaults.standard.set(data, forKey: Self.digRecsKey)
+                    }
+                }
+                Haptics.success()
+                withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .arrived }
+            }
+        }
+    }
+
+    /// Arm (or re-arm) the recurring daily "he's back with songs" notification at
+    /// the chosen delivery time. Journey-off waiting flow only — the journey path
+    /// has its own unlock notifications. Safe to call repeatedly (stable id).
+    private func ensureDailyDigScheduled() {
+        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
+        digScheduler.scheduleDailyDig(
+            hour: deliveryHour,
+            minute: deliveryMinute,
+            wormName: wormDisplayName ?? "your worm"
+        )
+    }
+
+    /// The one-time "when should he bring you songs?" step. It's raised by the
+    /// entrance/reveal sequence (after the crawl + settle), so it never appears
+    /// mid-crawl; the flag alone gates the overlay/chrome/z-order.
+    /// The chosen delivery time, formatted for copy ("8:00 pm").
+    private var deliveryClockString: String {
+        let isPM = deliveryHour >= 12
+        var h12 = deliveryHour % 12
+        if h12 == 0 { h12 = 12 }
+        return String(format: "%d:%02d %@", h12, deliveryMinute, isPM ? "pm" : "am")
+    }
+
+    /// The chosen delivery time as a continuous hour (0..24), for the sky.
+    private var deliveryTimeAsHours: Double {
+        Double(deliveryHour) + Double(deliveryMinute) / 60
+    }
+
+    /// The countdown target. Priority: the dev test deadline, then the reveal moment
+    /// of the cached upcoming batch (server-driven, unless it's one we already
+    /// showed), then a local next-delivery fallback until the server fills a slot.
+    private func cycleDeliveryDate() -> Date {
+        if deliveryTestDeadlineRaw > 0 {
+            return Date(timeIntervalSinceReferenceDate: deliveryTestDeadlineRaw)
+        }
+        if !digRevealDate.isEmpty, digRevealDate != lastRevealedDate,
+           let moment = revealMoment(forDate: digRevealDate) {
+            return moment
+        }
+        return localNextDelivery(after: Date())
+    }
+
+    /// A "YYYY-MM-DD" reveal date at the chosen delivery time, in the device's tz.
+    private func revealMoment(forDate dateStr: String) -> Date? {
+        let parts = dateStr.prefix(10).split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        var c = DateComponents()
+        c.year = parts[0]; c.month = parts[1]; c.day = parts[2]
+        c.hour = deliveryHour; c.minute = deliveryMinute
+        return Calendar.current.date(from: c)
+    }
+
+    /// The chosen delivery time's first occurrence strictly after `start`.
+    private func localNextDelivery(after start: Date) -> Date {
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: start)
+        comps.hour = deliveryHour
+        comps.minute = deliveryMinute
+        let occ = Calendar.current.date(from: comps) ?? start
+        return occ > start ? occ : (Calendar.current.date(byAdding: .day, value: 1, to: occ) ?? occ)
+    }
+
+
+    /// "6h 34m" until the next visit; expose seconds in the final minute so the
+    /// short Profile test deadline visibly counts down.
+    private var timeUntilDeliveryString: String {
+        let remaining = max(0, (cycleDeadline ?? cycleDeliveryDate()).timeIntervalSince(Date()))
+        let total = Int(remaining.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return "\(h)h \(m)m" }
+        if m > 0 { return "\(m)m \(s)s" }
+        return "\(s)s"
     }
 
     private var isNamingFlowActive: Bool {
@@ -1206,6 +1909,8 @@ struct WormHomeView: View {
                 appleEating = false
                 appleSwallowed = false
                 detailRevealed = false
+                // The freshly fed node now contributes to the brain.
+                ingestBrainSlices()
             }
 
             // The "eating ..." line lingers a touch past the return, then clears.
@@ -1327,6 +2032,10 @@ struct WormHomeView: View {
     private func finishFoundation() {
         withAnimation(.easeInOut(duration: 0.45)) { baseCompleteVisible = false }
         progression.advance()
+        // The foundation is set: read the whole profile (all three nodes), not
+        // just one source, so the brain forms its first cross-node understanding.
+        ingestBrainSlices()
+        synthesizeWholeProfile()
         Task {
             try? await Task.sleep(for: .seconds(0.2))
             await presentNextMorsel()   // no-op while the fresh countdown runs
@@ -1490,9 +2199,153 @@ struct WormHomeView: View {
 
     /// Run a node's full sync without blocking the feed flow. The node managers
     /// live for the app's lifetime (owned by `WormApp`) and persist their own
-    /// snapshots, so this fire-and-forget task safely finishes on its own.
+    /// snapshots, so this fire-and-forget task safely finishes on its own. When
+    /// it lands, refresh the brain so the new node's slice shows up live.
     private func startBackgroundSync(_ sync: @escaping () async -> Void) {
-        Task { await sync() }
+        Task {
+            await sync()
+            await MainActor.run { ingestBrainSlices() }
+        }
+    }
+
+    // MARK: - Brain
+
+    private var brainInputs: BrainInputSet {
+        BrainInputSet(
+            spotify: spotify,
+            appleMusic: appleMusic,
+            youtube: youtube,
+            contacts: contacts,
+            photos: photos,
+            calendar: calendar,
+            selfie: selfie,
+            prompts: promptNode
+        )
+    }
+
+    private static let isoFormatter = ISO8601DateFormatter()
+    private func iso(_ date: Date?) -> String? { date.map { Self.isoFormatter.string(from: $0) } }
+
+    /// Reduce every connected node to the compact structured facts the server dig
+    /// extracts seeds from — the same fields `BrainSeedExtractor` reads on-device.
+    /// Only populated nodes are included; sensitive nodes stay device-reduced to
+    /// these small fact arrays (raw media never leaves the device). The backend
+    /// additionally refreshes the Spotify node itself from the stored token, so
+    /// Spotify seeds stay live while every other node comes from here.
+    @MainActor
+    private func buildWormNodes() -> WormAPI.WormNodesPayload {
+        var nodes = WormAPI.WormNodesPayload()
+
+        // Spotify
+        let artist = { (a: SpotifyArtist) in WormAPI.ArtistLite(name: a.name, genres: a.genres) }
+        let track = { (t: SpotifyTrack) in
+            WormAPI.TrackLite(
+                name: t.name,
+                artist: t.artists.first?.name,
+                popularity: t.popularity,
+                album: t.album.map { WormAPI.AlbumLite(name: $0.name, releaseDate: $0.releaseDate) }
+            )
+        }
+        if !spotify.topArtistsLong.isEmpty || !spotify.savedAlbums.isEmpty || !spotify.playlists.isEmpty {
+            nodes.spotify = WormAPI.SpotifyNodePayload(
+                topArtistsShort: spotify.topArtistsShort.map(artist),
+                topArtistsMedium: spotify.topArtistsMedium.map(artist),
+                topArtistsLong: spotify.topArtistsLong.map(artist),
+                topTracksShort: spotify.topTracksShort.map(track),
+                topTracksLong: spotify.topTracksLong.map(track),
+                savedAlbums: spotify.savedAlbums.map {
+                    WormAPI.SavedAlbumLite(album: .init(name: $0.album.name, label: $0.album.label))
+                },
+                savedTrackCount: spotify.savedTracks.count,
+                playlists: spotify.playlists.map(\.name),
+                lastSyncedAt: iso(spotify.lastSyncedAt)
+            )
+        }
+
+        // Apple Music
+        if !appleMusic.songs.isEmpty || !appleMusic.artists.isEmpty {
+            let mostPlayed = appleMusic.songs
+                .filter { ($0.playCount ?? 0) > 0 }
+                .sorted { ($0.playCount ?? 0) > ($1.playCount ?? 0) }
+                .prefix(20)
+                .map { WormAPI.MostPlayedLite(artist: $0.artist, playCount: $0.playCount ?? 0) }
+            nodes.appleMusic = WormAPI.AppleMusicNodePayload(
+                genreNames: Array(appleMusic.songs.flatMap(\.genreNames).prefix(3000)),
+                mostPlayed: mostPlayed,
+                playlists: appleMusic.playlists.map(\.name),
+                artistNames: appleMusic.artists.map(\.name),
+                lastSyncedAt: iso(appleMusic.lastSyncedAt)
+            )
+        }
+
+        // YouTube
+        let ytVideos = youtube.likedVideos + Array(youtube.enrichedVideosByID.values)
+        let creatorNames = ytVideos.compactMap { $0.snippet?.channelTitle }
+        let topicCategories = ytVideos.flatMap { $0.topicDetails?.topicCategories ?? [] }
+            + youtube.enrichedChannelsByID.values.flatMap { $0.topicDetails?.topicCategories ?? [] }
+        if !creatorNames.isEmpty || !topicCategories.isEmpty {
+            nodes.youtube = WormAPI.YouTubeNodePayload(
+                creatorNames: Array(creatorNames.prefix(500)),
+                topicCategories: Array(topicCategories.prefix(500)),
+                lastSyncedAt: iso(youtube.lastSyncedAt)
+            )
+        }
+
+        // Photos
+        if !photos.albums.isEmpty {
+            nodes.photos = WormAPI.PhotosNodePayload(
+                locationNames: Array(photos.albums.flatMap(\.locationNames).prefix(500)),
+                albumTitles: photos.albums.map(\.title),
+                lastSyncedAt: iso(photos.lastSyncedAt)
+            )
+        }
+
+        // Calendar
+        let recurring = calendar.events
+            .filter { $0.hasRecurrenceRules || !$0.recurrenceRules.isEmpty }
+            .map {
+                WormAPI.RecurringEventLite(
+                    title: $0.title,
+                    hour: Calendar.current.component(.hour, from: $0.startDate),
+                    isAllDay: $0.isAllDay
+                )
+            }
+        if !recurring.isEmpty {
+            nodes.calendar = WormAPI.CalendarNodePayload(recurringEvents: recurring, lastSyncedAt: iso(calendar.lastSyncedAt))
+        }
+
+        // Contacts
+        let cities = contacts.contacts.flatMap { $0.postalAddresses.map(\.city) }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        if !cities.isEmpty {
+            nodes.contacts = WormAPI.ContactsNodePayload(cities: Array(cities.prefix(1000)), lastSyncedAt: iso(contacts.lastSyncedAt))
+        }
+
+        // Selfie
+        if let analysis = selfie.analysis, !analysis.aesthetics.isEmpty {
+            nodes.selfie = WormAPI.SelfieNodePayload(
+                aesthetics: analysis.aesthetics,
+                confidence: analysis.confidence,
+                lastAnalyzedAt: iso(selfie.lastAnalyzedAt)
+            )
+        }
+
+        return nodes
+    }
+
+    /// Reduce every node into brain slices and hand them to the profile, so a
+    /// freshly fed node contributes immediately (its slice, and "brain inputs
+    /// active") without waiting for the Profile screen to appear.
+    private func ingestBrainSlices() {
+        profile.ingest(brainInputs.context(read: profile.read, insights: profile.insights).slices)
+    }
+
+    /// Read the whole profile — synthesize over every ingested slice (not just
+    /// one node). Runs in the background; the brain owns the Claude call.
+    private func synthesizeWholeProfile() {
+        Task {
+            _ = await profile.synthesize(slices: brainInputs.slices())
+        }
     }
 
     // MARK: - Reward
@@ -1987,6 +2840,403 @@ private struct AttentionPulse: ViewModifier {
     }
 }
 
+/// The one-time daily-delivery-time step: an iOS-alarm-style wheel, rebuilt in
+/// our paper/ink voice (serif numerals, our colors) rather than the raw system
+/// picker. Reports back the chosen 24h time.
+/// The living sky behind the delivery-time step. Two layers that both track the
+/// chosen time continuously (so they fade *while* the wheel spins, not only when
+/// it settles): a full-screen sky gradient, and a large sun or moon rising from
+/// the bottom — highest at noon/midnight, low on the horizon at dawn/dusk, and
+/// crossfading between sun and moon across the transitions.
+private struct DeliveryTimeBackdrop: View {
+    /// Continuous time-of-day in hours (0..24, includes fractional minutes) so the
+    /// sky and the sun/moon track the wheel *while* it scrolls, not only on settle.
+    let time: Double
+
+    private var t: Double { time }
+
+    var body: some View {
+        GeometryReader { geo in
+            let size = geo.size
+            ZStack {
+                // Sky: two solid colors (which tween smoothly under the implicit
+                // animation) shaped into a vertical gradient by a fixed mask.
+                skyBottom
+                skyTop.mask(
+                    LinearGradient(
+                        stops: [.init(color: .black, location: 0),
+                                .init(color: .clear, location: 0.9)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                celestial(in: size)
+            }
+            .animation(.easeInOut(duration: 0.3), value: t)
+        }
+        .ignoresSafeArea()
+    }
+
+    // MARK: - Sky
+
+    private var skyTop: Color { Self.skyGradient(at: t).top }
+    private var skyBottom: Color { Self.skyGradient(at: t).bottom }
+
+    /// Keyframed sky palette across the day; linearly interpolated between stops.
+    private struct SkyStop {
+        let h: Double
+        let top: (Double, Double, Double)
+        let bottom: (Double, Double, Double)
+    }
+
+    private static let skyStops: [SkyStop] = [
+        .init(h: 0,    top: (0.043, 0.063, 0.149), bottom: (0.110, 0.137, 0.251)),
+        .init(h: 5,    top: (0.141, 0.188, 0.310), bottom: (0.290, 0.290, 0.416)),
+        .init(h: 6.5,  top: (0.478, 0.525, 0.722), bottom: (1.000, 0.698, 0.478)),
+        .init(h: 9,    top: (0.431, 0.776, 1.000), bottom: (0.804, 0.933, 1.000)),
+        .init(h: 12,   top: (0.290, 0.659, 1.000), bottom: (0.749, 0.902, 1.000)),
+        .init(h: 15,   top: (0.353, 0.690, 0.961), bottom: (0.812, 0.914, 1.000)),
+        .init(h: 18,   top: (0.420, 0.357, 0.584), bottom: (1.000, 0.549, 0.353)),
+        .init(h: 20,   top: (0.169, 0.169, 0.322), bottom: (0.420, 0.290, 0.478)),
+        .init(h: 22,   top: (0.075, 0.102, 0.220), bottom: (0.141, 0.141, 0.247)),
+        .init(h: 24,   top: (0.043, 0.063, 0.149), bottom: (0.110, 0.137, 0.251)),
+    ]
+
+    private static func rgbStops(at t: Double) -> (top: (Double, Double, Double), bottom: (Double, Double, Double)) {
+        var lo = skyStops[0]
+        var hi = skyStops[skyStops.count - 1]
+        for i in 0..<(skyStops.count - 1) where t >= skyStops[i].h && t <= skyStops[i + 1].h {
+            lo = skyStops[i]; hi = skyStops[i + 1]; break
+        }
+        let span = hi.h - lo.h
+        let f = span > 0 ? (t - lo.h) / span : 0
+        return (lerp(lo.top, hi.top, f), lerp(lo.bottom, hi.bottom, f))
+    }
+
+    private static func skyGradient(at t: Double) -> (top: Color, bottom: Color) {
+        let s = rgbStops(at: t)
+        return (color(s.top), color(s.bottom))
+    }
+
+    private static func lerp(_ a: (Double, Double, Double), _ b: (Double, Double, Double), _ f: Double) -> (Double, Double, Double) {
+        (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f)
+    }
+
+    private static func color(_ c: (Double, Double, Double)) -> Color {
+        Color(red: c.0, green: c.1, blue: c.2)
+    }
+
+    // MARK: - Adaptive UI color
+
+    /// 0 in daylight, 1 at night — read from the sky's luminance, so foreground
+    /// UI can stay legible as the backdrop darkens (and update live with it).
+    private static func nightFactor(at t: Double) -> Double {
+        let top = rgbStops(at: t).top
+        let lum = 0.2126 * top.0 + 0.7152 * top.1 + 0.0722 * top.2
+        return smoothstep(0.55, 0.30, lum)
+    }
+
+    private static let uiDark: (Double, Double, Double) = (0.10, 0.10, 0.13)
+    private static let uiLight: (Double, Double, Double) = (0.97, 0.96, 0.90)
+
+    /// The primary UI ink for a time: a *crisp* pick between near-black and cream —
+    /// never the muddy mid-gray a linear blend would pass through at dusk/dawn, when
+    /// the sky itself is mid-luminance. `onForeground`/the halo cover the crossover.
+    /// With the scene off there's no sky, so it's simply ink on paper.
+    static func foreground(at t: Double) -> Color {
+        guard DevFlags.deliveryTimeSceneEnabled else { return color(uiDark) }
+        return color(nightFactor(at: t) >= 0.5 ? uiLight : uiDark)
+    }
+
+    /// The contrasting color: sits *on* `foreground` (a button label on a
+    /// foreground-filled capsule) and doubles as the legibility halo behind text.
+    static func onForeground(at t: Double) -> Color {
+        guard DevFlags.deliveryTimeSceneEnabled else { return color(uiLight) }
+        return color(nightFactor(at: t) >= 0.5 ? uiDark : uiLight)
+    }
+
+    // MARK: - Sun / moon
+
+    /// 1 = full day, 0 = full night, smoothly crossing at dawn (5–7) and dusk (17–19).
+    private var sunPresence: Double {
+        if t <= 5 || t >= 19 { return 0 }
+        if t < 7 { return Self.smoothstep(5, 7, t) }
+        if t > 17 { return 1 - Self.smoothstep(17, 19, t) }
+        return 1
+    }
+
+    private static func smoothstep(_ e0: Double, _ e1: Double, _ x: Double) -> Double {
+        let t = min(max((x - e0) / (e1 - e0), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    private func celestial(in size: CGSize) -> some View {
+        let R = size.width * 1.05
+        // Zenith at noon/midnight (|cos| = 1), grazing the horizon at dawn/dusk.
+        let peek = size.height * (0.15 + 0.13 * abs(cos(.pi * t / 12)))
+        let centerY = size.height + R - peek
+        return ZStack {
+            sunBody(radius: R).opacity(sunPresence)
+            moonBody(radius: R).opacity(1 - sunPresence)
+        }
+        .frame(width: R * 2, height: R * 2)
+        .position(x: size.width / 2, y: centerY)
+    }
+
+    private func sunBody(radius R: CGFloat) -> some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [Color(red: 1.0, green: 0.96, blue: 0.75),
+                             Color(red: 1.0, green: 0.80, blue: 0.38),
+                             Color(red: 1.0, green: 0.60, blue: 0.26)],
+                    center: .center, startRadius: 0, endRadius: R
+                )
+            )
+            .frame(width: R * 2, height: R * 2)
+            .shadow(color: Color(red: 1.0, green: 0.78, blue: 0.42).opacity(0.55), radius: 60)
+    }
+
+    private func moonBody(radius R: CGFloat) -> some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [Color(red: 0.97, green: 0.98, blue: 1.0),
+                             Color(red: 0.87, green: 0.90, blue: 0.99),
+                             Color(red: 0.77, green: 0.81, blue: 0.94)],
+                    center: UnitPoint(x: 0.42, y: 0.4), startRadius: 0, endRadius: R
+                )
+            )
+            .frame(width: R * 2, height: R * 2)
+            .overlay {
+                // A few soft craters near the visible top, for character.
+                ZStack {
+                    crater(dx: -0.10, dy: -0.34, scale: 0.075, in: R)
+                    crater(dx: 0.12, dy: -0.30, scale: 0.05, in: R)
+                    crater(dx: 0.02, dy: -0.24, scale: 0.11, in: R)
+                }
+            }
+            .shadow(color: Color(red: 0.78, green: 0.83, blue: 1.0).opacity(0.5), radius: 48)
+    }
+
+    private func crater(dx: CGFloat, dy: CGFloat, scale: CGFloat, in R: CGFloat) -> some View {
+        Circle()
+            .fill(Color(red: 0.70, green: 0.74, blue: 0.89).opacity(0.55))
+            .frame(width: R * 2 * scale, height: R * 2 * scale)
+            .offset(x: R * 2 * dx, y: R * 2 * dy)
+    }
+}
+
+/// A drag-driven wheel that reports its position *continuously* — including
+/// fractional, between-item values — while the finger moves, then springs to the
+/// nearest item and commits on release. Unlike SwiftUI's `.wheel` Picker (which
+/// only writes its binding on settle), this lets the sky track the scroll live.
+private struct TimeWheel<Value: Hashable>: View {
+    let values: [Value]
+    @Binding var selection: Value
+    var foreground: Color = .black
+    /// Contrasting color painted as a soft halo behind each digit, so numbers stay
+    /// legible over any sky (including mid-tone dusk/dawn).
+    var halo: Color = .clear
+    let label: (Value) -> String
+    var onScrub: (Double) -> Void = { _ in }
+
+    private let rowHeight: CGFloat = 64
+
+    @State private var committed = 0
+    @State private var drag: CGFloat = 0
+    @State private var lastTick = 0
+
+    private var count: Int { values.count }
+
+    /// Unclamped fractional index for the current drag (dragging down = earlier).
+    private func fractional(_ d: CGFloat) -> Double {
+        Double(committed) - Double(d / rowHeight)
+    }
+
+    private func clampedFractional(_ d: CGFloat) -> Double {
+        min(max(fractional(d), 0), Double(count - 1))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let midX = geo.size.width / 2
+            let midY = geo.size.height / 2
+            let frac = clampedFractional(drag)
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(foreground.opacity(0.04))
+                    .frame(height: rowHeight)
+                    .position(x: midX, y: midY)
+
+                ForEach(Array(values.enumerated()), id: \.offset) { idx, value in
+                    let dist: Double = Double(idx) - frac
+                    let ad: Double = abs(dist)
+                    let opacity: Double = max(0.12, 1 - ad * 0.34)
+                    let scale: CGFloat = CGFloat(max(0.72, 1 - ad * 0.12))
+                    let y: CGFloat = midY + CGFloat(dist) * rowHeight
+                    if ad <= 3 {
+                        Text(label(value))
+                            .font(.system(size: 49, weight: .semibold, design: .serif))
+                            .foregroundStyle(foreground.opacity(opacity))
+                            .shadow(color: halo.opacity(opacity * 0.6), radius: 4)
+                            .scaleEffect(scale)
+                            .position(x: midX, y: y)
+                    }
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .mask(
+                LinearGradient(
+                    stops: [.init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.28),
+                            .init(color: .black, location: 0.72),
+                            .init(color: .clear, location: 1)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            // AFTER the mask: a mask also clips hit-testing, so define the draggable
+            // area as the full frame here or the faded top/bottom become dead zones.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { v in
+                        drag = v.translation.height
+                        let f = clampedFractional(drag)
+                        let nearest = Int(f.rounded())
+                        if nearest != lastTick {
+                            lastTick = nearest
+                            Haptics.tick(intensity: 0.5)
+                        }
+                        onScrub(f)
+                    }
+                    .onEnded { v in
+                        // Carry a little momentum from the flick into the target.
+                        let projected = v.translation.height
+                            + (v.predictedEndTranslation.height - v.translation.height) * 0.5
+                        let target = min(max(Int(fractional(projected).rounded()), 0), count - 1)
+                        // Animate the drag to where `target` sits, keeping `committed`
+                        // put so nothing jumps; normalize once the spring lands.
+                        let targetDrag = CGFloat(committed - target) * rowHeight
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                            drag = targetDrag
+                        } completion: {
+                            committed = target
+                            drag = 0
+                        }
+                        lastTick = target
+                        selection = values[target]
+                        onScrub(Double(target))
+                    }
+            )
+            .onAppear {
+                if let i = values.firstIndex(of: selection) {
+                    committed = i; lastTick = i
+                }
+            }
+            .onChange(of: selection) { _, newVal in
+                guard drag == 0, let i = values.firstIndex(of: newVal), i != committed else { return }
+                committed = i; lastTick = i
+            }
+        }
+    }
+}
+
+private struct DeliveryTimePicker: View {
+    let wormName: String
+    @Binding var hour12: Int
+    @Binding var minute: Int
+    @Binding var isPM: Bool
+    /// Continuous hour24 (0..24), fired on every scrub so the backdrop can follow.
+    var onLiveTime: (Double) -> Void
+
+    private let hourValues = Array(1...12)
+    private let minuteValues = Array(stride(from: 0, through: 55, by: 5))
+
+    // Live fractional selections, updated while a wheel scrolls (not just on snap),
+    // so the sky and the adaptive UI ink track the motion in real time.
+    @State private var liveHour12: Double = 8
+    @State private var liveMinute: Double = 0
+
+    private func timeValue(hour12 h: Double, minute m: Double, pm: Bool) -> Double {
+        h.truncatingRemainder(dividingBy: 12) + (pm ? 12 : 0) + m / 60
+    }
+
+    private var liveTime: Double { timeValue(hour12: liveHour12, minute: liveMinute, pm: isPM) }
+    private var foreground: Color { DeliveryTimeBackdrop.foreground(at: liveTime) }
+    private var onForeground: Color { DeliveryTimeBackdrop.onForeground(at: liveTime) }
+
+    var body: some View {
+        VStack(spacing: 22) {
+            // One short line — no subtitle. The worm visits once a day; when.
+            Text("when should \(wormName) bring your songs?")
+                .font(.system(size: 27, weight: .bold, design: .serif))
+                .foregroundStyle(foreground)
+                .shadow(color: onForeground.opacity(0.45), radius: 5)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+
+            HStack(spacing: 0) {
+                TimeWheel(values: hourValues, selection: $hour12, foreground: foreground,
+                          halo: onForeground, label: { "\($0)" }) { frac in
+                    liveHour12 = frac + 1
+                    onLiveTime(timeValue(hour12: frac + 1, minute: liveMinute, pm: isPM))
+                }
+                .frame(width: 150, height: 300)
+
+                Text(":")
+                    .font(.system(size: 38, weight: .bold, design: .serif))
+                    .foregroundStyle(foreground.opacity(0.5))
+                    .shadow(color: onForeground.opacity(0.4), radius: 4)
+                    .offset(y: -2)
+
+                TimeWheel(values: minuteValues, selection: $minute, foreground: foreground,
+                          halo: onForeground, label: { String(format: "%02d", $0) }) { frac in
+                    liveMinute = frac * 5
+                    onLiveTime(timeValue(hour12: liveHour12, minute: frac * 5, pm: isPM))
+                }
+                .frame(width: 150, height: 300)
+            }
+
+            amPmToggle
+        }
+        .padding(.top, 210)
+        .animation(.easeInOut(duration: 0.3), value: liveTime)
+        .onAppear {
+            liveHour12 = Double(hour12)
+            liveMinute = Double(minute)
+            onLiveTime(liveTime)
+        }
+    }
+
+    /// A clean two-up am/pm pill: the selected side is a filled capsule that
+    /// slides across, instead of a cramped third wheel.
+    private var amPmToggle: some View {
+        HStack(spacing: 0) {
+            ForEach([false, true], id: \.self) { pm in
+                Text(pm ? "pm" : "am")
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(isPM == pm ? onForeground : foreground.opacity(0.5))
+                    // Halo only on the unselected side; the selected sits on a filled pill.
+                    .shadow(color: (isPM == pm ? Color.clear : onForeground).opacity(0.4), radius: 3)
+                    .frame(width: 66, height: 42)
+                    .contentShape(Capsule())
+                    .onTapGesture {
+                        guard isPM != pm else { return }
+                        Haptics.impact(.light)
+                        isPM = pm
+                        onLiveTime(timeValue(hour12: liveHour12, minute: liveMinute, pm: pm))
+                    }
+            }
+        }
+        .background(alignment: isPM ? .trailing : .leading) {
+            Capsule().fill(foreground).frame(width: 66, height: 42)
+        }
+        .padding(4)
+        .background(Capsule().fill(foreground.opacity(0.12)))
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isPM)
+    }
+}
+
 /// A small numbered step marker beside a base apple: white disc, dotted ink
 /// border, the step number. The caller dims it (via opacity) when the step
 /// isn't live yet.
@@ -2098,4 +3348,75 @@ private extension AnyTransition {
     .environment(PromptNode())
     .environment(TasteProfile())
     .environment(NodeProgression(scheduler: UnlockNotificationScheduler()))
+}
+
+// MARK: - Delivery-time picker preview
+
+/// Isolated, configurable preview of the delivery-time step: the picker over the
+/// paper backdrop with the real "that's it" button below, so it can be tuned on
+/// its own without booting the whole home entrance.
+#Preview("Delivery time") {
+    DeliveryTimePickerPreviewHost()
+}
+
+private struct DeliveryTimePickerPreviewHost: View {
+    @State private var hour12 = 8
+    @State private var minute = 0
+    @State private var isPM = true
+    @State private var liveTime: Double = 20
+
+    var body: some View {
+        GeometryReader { geo in
+            let W = geo.size.width, H = geo.size.height
+            let settledSize = OnboardingWormSize(length: 150, thickness: 24)
+            ZStack {
+                DeliveryTimeBackdrop(time: liveTime)
+                    .zIndex(0)
+
+                // The worm, settled on his bed, sharp in front of the sky.
+                HomeWorm(
+                    entranceStart: -100_000,
+                    gulpStart: nil,
+                    restCenter: CGPoint(x: W / 2, y: H * 0.78),
+                    fromSize: settledSize,
+                    toSize: settledSize,
+                    entranceDuration: 2.9,
+                    settleDuration: 0.7,
+                    color: .black,
+                    eyeColor: Color(red: 0.97, green: 0.96, blue: 0.93),
+                    wiggles: [],
+                    onTap: { _ in }
+                )
+                .zIndex(1)
+
+                DeliveryTimePicker(
+                    wormName: "wilbur",
+                    hour12: $hour12,
+                    minute: $minute,
+                    isPM: $isPM,
+                    onLiveTime: { liveTime = $0 }
+                )
+                .frame(maxWidth: 340)
+                .position(x: W / 2, y: H * 0.24)
+                .zIndex(2)
+
+                Button {
+                } label: {
+                    Text("that's it")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(DeliveryTimeBackdrop.onForeground(at: liveTime))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(DeliveryTimeBackdrop.foreground(at: liveTime), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: 300)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, 14)
+                .animation(.easeInOut(duration: 0.3), value: liveTime)
+                .zIndex(3)
+            }
+        }
+        .ignoresSafeArea()
+    }
 }

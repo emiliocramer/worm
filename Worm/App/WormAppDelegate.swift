@@ -29,4 +29,7 @@ final class WormAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
 
 extension Notification.Name {
     static let wormUnlockTapped = Notification.Name("worm.unlock.tapped")
+    /// Dev-only: force the home to fetch today's server picks and jump straight to
+    /// the reveal, bypassing the countdown and the enter-waiting fetch trigger.
+    static let wormForceReveal = Notification.Name("worm.force.reveal")
 }

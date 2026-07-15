@@ -8,6 +8,7 @@ import SwiftUI
 /// top-left when `DevFlags.showGraphButton` is set.
 struct HomeView: View {
     var allowsDiggingHaptics = true
+    @State private var showHiddenProfile = false
 
     var body: some View {
         DiggingView(allowsHaptics: allowsDiggingHaptics)
@@ -43,19 +44,25 @@ struct HomeView: View {
             //     }
             // }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink(value: NodeRoute.profile) {
-                        Image(systemName: "person.crop.circle")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.black.opacity(0.76))
-                            .frame(width: 44, height: 44)
-                            .liquidGlass(in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Profile")
-                }
+            .overlay(alignment: .topTrailing) {
+                hiddenProfileHotspot
+                    .padding(.trailing, 8)
+                    .padding(.top, 6)
             }
+            .navigationDestination(isPresented: $showHiddenProfile) {
+                ProfileView()
+            }
+    }
+
+    /// Deliberately invisible: two taps in the top-right corner reveal the profile.
+    private var hiddenProfileHotspot: some View {
+        Color.clear
+            .frame(width: 72, height: 72)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                showHiddenProfile = true
+            }
+            .accessibilityHidden(true)
     }
 }
 
