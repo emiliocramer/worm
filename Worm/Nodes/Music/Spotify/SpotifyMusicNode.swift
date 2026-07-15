@@ -392,6 +392,12 @@ final class SpotifyMusicNode {
     @ObservationIgnored private let presentationContextProvider = SpotifyAuthPresentationContextProvider()
     @ObservationIgnored private var authSession: ASWebAuthenticationSession?
     @ObservationIgnored private var tokens: SpotifyAuthorizationTokens?
+    /// The current refresh token, for handing to the Worm backend so it can
+    /// re-sync the Spotify node headless. Nil when not connected.
+    var currentRefreshToken: String? {
+        guard let token = tokens?.refreshToken, !token.isEmpty else { return nil }
+        return token
+    }
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     @ObservationIgnored private let syncWorker = SpotifySyncWorker()
     @ObservationIgnored private let snapshotStore = SnapshotStore<SpotifyNodeSnapshot>(filename: "spotify-snapshot.json")
@@ -739,6 +745,30 @@ final class SpotifyMusicNode {
             return try await api.searchTracks(accessToken: token, query: query, limit: limit).tracks.items
         } catch {
             return []
+        }
+    }
+
+    /// Resolve a recommendation to its exact catalog track — for cover art. Uses the
+    /// same precise query as verification and only returns a track whose title AND
+    /// artist line up (normalized), so the artwork always matches the pick. Never a
+    /// guess: no confident match → nil.
+    func resolveCatalogTrack(title: String, artist: String) async -> SpotifyTrack? {
+        guard isConfigured else { return nil }
+        func norm(_ s: String) -> String {
+            s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        do {
+            let token = try await validAccessToken()
+            let query = "track:\"\(title)\" artist:\"\(artist)\""
+            let items = try await api.searchTracks(accessToken: token, query: query, limit: 5).tracks.items
+            let wantTitle = norm(title), wantArtist = norm(artist)
+            return items.first { track in
+                let t = norm(track.name), a = norm(track.primaryArtist)
+                return t == wantTitle && (a.contains(wantArtist) || wantArtist.contains(a))
+            }
+        } catch {
+            return nil
         }
     }
 
