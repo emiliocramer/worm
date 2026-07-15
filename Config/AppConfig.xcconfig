@@ -3,6 +3,10 @@
 WORM_ANTHROPIC_API_KEY =
 WORM_ANTHROPIC_BASE_URL = https:/$()/api.anthropic.com
 
+// Worm dig backend (shibuya-api `/worm`). Points at production; override in
+// Secrets.xcconfig with http:/$()/localhost:3010 for local backend dev.
+WORM_BACKEND_BASE_URL = https:/$()/api.shibuyaaa.com
+
 WORM_SPOTIFY_CLIENT_ID =
 WORM_SPOTIFY_REDIRECT_URI = com.shibuya.worm.spotify-auth:/$()/oauth-callback
 WORM_SPOTIFY_CALLBACK_SCHEME = com.shibuya.worm.spotify-auth

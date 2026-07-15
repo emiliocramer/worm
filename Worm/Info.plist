@@ -64,6 +64,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>WormBackendBaseURL</key>
+	<string>$(WORM_BACKEND_BASE_URL)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>WormAnthropicAPIKey</key>
 	<string>$(WORM_ANTHROPIC_API_KEY)</string>
 	<key>WormAnthropicBaseURL</key>
