@@ -5,7 +5,6 @@ enum NodeRoute: Hashable, Codable {
     case profile
     case profileChat
     case graph
-    case digging
     case spotify
     case appleMusic
     case youtube

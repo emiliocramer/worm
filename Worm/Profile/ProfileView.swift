@@ -41,9 +41,11 @@ struct ProfileView: View {
             graphHealthSection
             journeySection
             brainSection
+#if DEBUG
             if DevFlags.showProgressionDevPanel {
                 progressionDevSection
             }
+#endif
             foodVisualsSection
             nodesSection
             selfReportsSection

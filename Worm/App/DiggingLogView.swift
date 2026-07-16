@@ -350,7 +350,6 @@ struct DiggingLogView: View {
         .onChange(of: deliveryTestDeadlineRaw) { _, _ in rebuild() }
     }
 
-    @ViewBuilder
     private func content(now: Date, size: CGSize) -> some View {
         let shown = entries.filter { $0.date <= now }
         // Fill from the bottom row all the way up and past the top edge (older rows

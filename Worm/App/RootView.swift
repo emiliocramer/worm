@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Entry surface: the personality node graph. Tapping a node pushes its detail
-/// view; the system back button returns to the graph.
+/// App root: splash first, then onboarding for a new user or the single home
+/// surface (`WormHomeView`) for a returning one.
 struct RootView: View {
     @State private var showSplash = true
     @State private var showedOnboardingThisSession = false
@@ -35,8 +35,6 @@ struct RootView: View {
                             switch route {
                             case .profile:
                                 ProfileView()
-                            case .digging:
-                                HomeView(allowsDiggingHaptics: true)
                             case .profileChat:
                                 ProfileChatView()
                             case .graph:

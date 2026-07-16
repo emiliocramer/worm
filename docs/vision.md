@@ -169,10 +169,9 @@ worm's output contract for *any* query of the brain — not an FTUE detail.
 
 The whole funnel exists to deliver §3.3 (fast, partial delight). Steps:
 
-1. **Logo.** The worm draws itself in (`WormSplashView`), crossfades to home.
-2. **Soft intro, no node.** Home is the centered greeting on paper
-   (`HomeView` + `WormGreetingView`). Built from local, permission-free,
-   node-free signals only (`WormGreeting`). Warm, low-pressure, already alive.
+1. **Logo.** The worm draws itself in (`WormSplashView`), then hands off to onboarding.
+2. **Soft intro, no node.** Onboarding introduces the worm, then asks for a
+   selfie and Spotify. It is warm, low-pressure, and already alive.
 3. **Connect a node.** Spotify first (richest, fastest to a good insight).
 4. **Delight *while* it syncs.** As the node streams data in, the worm surfaces
    what it notices off partial data. The user must feel "it gets me" before the
@@ -306,8 +305,9 @@ breaks the entire promise harder than no insight. **Silence beats a miss.**
   organizations, dates, communication surfaces, and image data; Photos incl.
   on-device Vision plus AVFoundation video metadata).
 - Per-node persistence; connect-once, no auto re-sync.
-- Permission-free, node-free home greeting (`WormGreeting`).
-- Dev-flagged node graph behind the home screen.
+- A single `WormHomeView`: setup, naming, delivery-time selection, active
+  digging, and the daily recommendation reveal are states of the same home.
+- A developer node graph is still implemented, but has no active home entry.
 - Brain foundation: per-node slices, combined brain context, Claude-backed
   synthesis/query boundary, local novelty checks, and Profile -> Brain Chat.
 - Node progression: the engagement loop that drips unlockable brain nodes on a

@@ -2,15 +2,6 @@ import SwiftUI
 import UIKit
 import Combine
 
-/// A resolved pick to reveal: title, artist, and the exact album-artwork URL
-/// (resolved from the catalog so the cover can never mismatch the song). `artwork`
-/// nil = no cover found → show a placeholder rather than a wrong image.
-struct FoundSong: Codable, Hashable {
-    let title: String
-    let artist: String
-    let artwork: String?
-}
-
 /// Home. A quiet forest clearing, and the worm — at the size he's earned —
 /// crawling in from offscreen left onto its moss bed.
 /// Food drifts down for nodes that can be added; in dev mode populated nodes
@@ -49,22 +40,10 @@ struct WormHomeView: View {
     /// + ask for notifications → "done, see you at ___" → the waiting/digging
     /// screen with its "i'll be back in Hh:Mm" countdown. `nil` = not in the flow.
     @State private var deliveryFlow: DeliveryFlowStep?
-    /// The fixed target the current dig counts down to (captured on entering
-    /// `.waiting`, so the clock actually reaches zero instead of rolling to tomorrow).
-    @State private var cycleDeadline: Date?
+    /// Owns persisted picks, the deadline, and the backend dig synchronization.
+    @State private var digCycle = DigCycleCoordinator()
     /// Shared with `DiggingLogView` — clearing it starts a fresh dig cycle.
     @AppStorage("worm.digStartedAt") private var digStartRaw: Double = 0
-    /// The upcoming cycle's picks, fetched from the backend (which digs a day
-    /// ahead) and cached locally so the reveal at the delivery moment needs no
-    /// network. Revealed when the countdown reaches the reveal date.
-    @State private var digRecs: [FoundSong] = []
-    /// Guards against overlapping backend syncs.
-    @State private var digSyncing = false
-    /// The reveal date (YYYY-MM-DD) the cached `digRecs` belong to.
-    @AppStorage("worm.digRevealDate") private var digRevealDate: String = ""
-    /// The last reveal date actually shown, so we don't re-reveal a batch after the
-    /// user taps "continue" while the next slot is still being filled server-side.
-    @AppStorage("worm.lastRevealedDate") private var lastRevealedDate: String = ""
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var nameFieldFocused: Bool
 
@@ -687,11 +666,14 @@ struct WormHomeView: View {
         // so its picks are ready to reveal when the timer completes.
         .onChange(of: deliveryFlow) { _, step in
             if step == .waiting {
-                if digStartRaw == 0 { digStartRaw = Date().timeIntervalSinceReferenceDate }
-                loadCachedRecsIntoState()
-                cycleDeadline = cycleDeliveryDate()
-                syncFromBackend()
+                beginDigCycle()
             }
+        }
+        .onChange(of: deliveryTestDeadlineRaw) { _, deadline in
+            guard deadline > 0 else { return }
+            digStartRaw = Date().timeIntervalSinceReferenceDate
+            withAnimation(.easeInOut(duration: 0.3)) { deliveryFlow = .waiting }
+            beginDigCycle()
         }
         // Self-heal: on foreground, re-pull the upcoming batch so a long-open app
         // still picks up the next day's slot without a relaunch.
@@ -701,7 +683,7 @@ struct WormHomeView: View {
         // Tick: when the countdown reaches the reveal moment, arrive (the batch is
         // already cached locally, so the reveal needs no network).
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            if deliveryFlow == .waiting, let d = cycleDeadline, Date() >= d { arriveHome() }
+            if deliveryFlow == .waiting, let deadline = digCycle.deadline, Date() >= deadline { arriveHome() }
         }
         .navigationDestination(isPresented: $showHiddenProfile) {
             ProfileView()
@@ -961,6 +943,7 @@ struct WormHomeView: View {
             homeControlsVisible = true
             entranceStart = nil
             nameTagVisible = false
+            beginDigCycle()
             return
         }
 
@@ -1335,7 +1318,7 @@ struct WormHomeView: View {
     /// date was shown so we don't replay it after "continue".
     private func arriveHome() {
         guard deliveryFlow == .waiting else { return }
-        if !digRevealDate.isEmpty { lastRevealedDate = digRevealDate }
+        digCycle.markRevealed()
         Haptics.success()
         withAnimation(.easeInOut(duration: 0.7)) { deliveryFlow = .arrived }
     }
@@ -1347,10 +1330,7 @@ struct WormHomeView: View {
         Haptics.impact(.medium)
         deliveryTestDeadlineRaw = 0
         digStartRaw = 0
-        digRecs = []
-        digRevealDate = ""
-        UserDefaults.standard.removeObject(forKey: Self.digRecsKey)
-        cycleDeadline = cycleDeliveryDate()
+        digCycle.reset(input: digCycleInput, testDeadline: 0)
         ensureDailyDigScheduled()
         withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .waiting }
     }
@@ -1358,7 +1338,7 @@ struct WormHomeView: View {
     /// The three songs to reveal: the cached upcoming picks (with exact covers) once
     /// they've landed, otherwise placeholders until the fetch finishes.
     private var foundSongs: [FoundSong] {
-        if !digRecs.isEmpty { return Array(digRecs.prefix(3)) }
+        if !digCycle.recommendations.isEmpty { return Array(digCycle.recommendations.prefix(3)) }
         return DiggingLog.finds(seed: UInt64(bitPattern: Int64(max(0, digStartRaw).rounded())))
             .map { FoundSong(title: $0.title, artist: $0.artist, artwork: nil) }
     }
@@ -1389,128 +1369,47 @@ struct WormHomeView: View {
         }
     }
 
-    // MARK: - The real recommendation dig (runs during the wait)
+    // MARK: - Recommendation dig boundary
 
-    private struct CachedDigRecs: Codable {
-        let revealDate: String
-        let recs: [FoundSong]
-    }
-    private static let digRecsKey = "worm.digRecs"
-
-    private func loadCachedRecs() -> CachedDigRecs? {
-        guard let data = UserDefaults.standard.data(forKey: Self.digRecsKey) else { return nil }
-        return try? JSONDecoder().decode(CachedDigRecs.self, from: data)
-    }
-
-    private func loadCachedRecsIntoState() {
-        if let c = loadCachedRecs(), !digRevealDate.isEmpty, c.revealDate == digRevealDate {
-            digRecs = c.recs
-        }
-    }
-
-    /// Map + sort a backend batch to the reveal's `FoundSong`s (top 3, exact covers).
-    private func songs(from recs: [WormAPI.TodayRec]) -> [FoundSong] {
-        recs.sorted { $0.rank < $1.rank }.prefix(3).map {
-            FoundSong(title: $0.title, artist: $0.artist, artwork: $0.artworkUrl)
-        }
-    }
-
-    /// Push the current profile to the backend and pull the upcoming (a-day-ahead)
-    /// batch. The dig runs server-side on schedule; here we keep the server's copy
-    /// current, and if no upcoming slot exists yet (fresh setup) we fill it now.
-    /// The result is cached locally so the reveal at the delivery moment is instant.
-    private func syncFromBackend() {
-        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
-        if digSyncing { return }
-        digSyncing = true
-
-        // Reduce the live profile to compact nodes + text slices for upload (no raw data).
+    private var digCycleInput: DigCycleSyncInput {
         let context = brainInputs.context(read: profile.read, insights: profile.insights)
         let textSlices = context.populatedSlices
             .filter { !$0.summary.isEmpty }
             .map { WormAPI.TextSlice(node: $0.nodeID.rawValue, summary: $0.summary) }
-        let nodes = buildWormNodes()
-        let hour = deliveryHour, minute = deliveryMinute
-        let name = wormDisplayName
-        let refreshToken = spotify.currentRefreshToken
+        return DigCycleSyncInput(
+            deliveryHour: deliveryHour,
+            deliveryMinute: deliveryMinute,
+            wormName: wormDisplayName,
+            nodes: buildWormNodes(),
+            textSlices: textSlices,
+            spotifyRefreshToken: spotify.currentRefreshToken
+        )
+    }
 
+    private func syncFromBackend() {
+        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
+        let input = digCycleInput
+        let testDeadline = deliveryTestDeadlineRaw
         Task {
-            await WormAPI.putProfile(deliveryHour: hour, deliveryMinute: minute, wormName: name, nodes: nodes, textSlices: textSlices)
-            if let refreshToken { await WormAPI.postSpotifySource(refreshToken: refreshToken) }
-
-            var resp = await WormAPI.fetchToday()
-            if resp == nil || !(resp?.ready ?? false) {
-                // No upcoming slot computed yet (fresh setup) — fill it now.
-                if let run = await WormAPI.triggerDig(), let recs = run.recommendations, !recs.isEmpty {
-                    resp = WormAPI.TodayResponse(
-                        ready: true, cycleDate: run.cycleDate,
-                        deliveryHour: hour, deliveryMinute: minute, recommendations: recs
-                    )
-                }
-            }
-            await MainActor.run {
-                applyToday(resp)
-                digSyncing = false
+            if await digCycle.sync(input: input, testDeadline: testDeadline), deliveryFlow == .waiting {
+                arriveHome()
             }
         }
     }
 
-    /// Apply a fetched batch: cache it and set the countdown to its reveal moment.
-    /// A batch we've already shown (`lastRevealedDate`) isn't replayed — we just
-    /// keep counting to the next delivery until the server produces the next slot.
-    private func applyToday(_ resp: WormAPI.TodayResponse?) {
-        guard let resp, resp.ready, let cd = resp.cycleDate, !resp.recommendations.isEmpty else { return }
-        let date = String(cd.prefix(10))
-
-        if date == lastRevealedDate {
-            if deliveryTestDeadlineRaw == 0 { cycleDeadline = localNextDelivery(after: Date()) }
-            return
-        }
-
-        digRecs = songs(from: resp.recommendations)
-        digRevealDate = date
-        if let data = try? JSONEncoder().encode(CachedDigRecs(revealDate: date, recs: digRecs)) {
-            UserDefaults.standard.set(data, forKey: Self.digRecsKey)
-        }
-        // Dev test deadline (5s) overrides the real reveal moment.
-        if deliveryTestDeadlineRaw == 0, let moment = revealMoment(forDate: date) {
-            cycleDeadline = moment
-            if Date() >= moment, deliveryFlow == .waiting { arriveHome() }   // already due
-        }
+    private func beginDigCycle() {
+        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
+        if digStartRaw == 0 { digStartRaw = Date().timeIntervalSinceReferenceDate }
+        digCycle.beginWaiting(input: digCycleInput, testDeadline: deliveryTestDeadlineRaw)
+        syncFromBackend()
     }
 
-    /// Dev-only: fetch the latest server batch and jump straight to the reveal,
-    /// bypassing the countdown and the already-shown guard. Fills a slot first if
-    /// none exists yet.
     private func forceRevealTodayNow() {
-        digRecs = []
-        digRevealDate = ""
-        UserDefaults.standard.removeObject(forKey: Self.digRecsKey)
-        cycleDeadline = Date()
-        withAnimation(.easeInOut(duration: 0.4)) { deliveryFlow = .waiting }
-
+        let input = digCycleInput
         Task {
-            var resp = await WormAPI.fetchToday()
-            if resp == nil || !(resp?.ready ?? false) {
-                if let run = await WormAPI.triggerDig(), let recs = run.recommendations, !recs.isEmpty {
-                    resp = WormAPI.TodayResponse(
-                        ready: true, cycleDate: run.cycleDate,
-                        deliveryHour: deliveryHour, deliveryMinute: deliveryMinute, recommendations: recs
-                    )
-                }
-            }
-            await MainActor.run {
-                if let resp, let cd = resp.cycleDate, !resp.recommendations.isEmpty {
-                    digRecs = songs(from: resp.recommendations)
-                    digRevealDate = String(cd.prefix(10))
-                    lastRevealedDate = digRevealDate
-                    if let data = try? JSONEncoder().encode(CachedDigRecs(revealDate: digRevealDate, recs: digRecs)) {
-                        UserDefaults.standard.set(data, forKey: Self.digRecsKey)
-                    }
-                }
-                Haptics.success()
-                withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .arrived }
-            }
+            await digCycle.forceReveal(input: input)
+            Haptics.success()
+            withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .arrived }
         }
     }
 
@@ -1542,51 +1441,9 @@ struct WormHomeView: View {
         Double(deliveryHour) + Double(deliveryMinute) / 60
     }
 
-    /// The countdown target. Priority: the dev test deadline, then the reveal moment
-    /// of the cached upcoming batch (server-driven, unless it's one we already
-    /// showed), then a local next-delivery fallback until the server fills a slot.
-    private func cycleDeliveryDate() -> Date {
-        if deliveryTestDeadlineRaw > 0 {
-            return Date(timeIntervalSinceReferenceDate: deliveryTestDeadlineRaw)
-        }
-        if !digRevealDate.isEmpty, digRevealDate != lastRevealedDate,
-           let moment = revealMoment(forDate: digRevealDate) {
-            return moment
-        }
-        return localNextDelivery(after: Date())
-    }
-
-    /// A "YYYY-MM-DD" reveal date at the chosen delivery time, in the device's tz.
-    private func revealMoment(forDate dateStr: String) -> Date? {
-        let parts = dateStr.prefix(10).split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        var c = DateComponents()
-        c.year = parts[0]; c.month = parts[1]; c.day = parts[2]
-        c.hour = deliveryHour; c.minute = deliveryMinute
-        return Calendar.current.date(from: c)
-    }
-
-    /// The chosen delivery time's first occurrence strictly after `start`.
-    private func localNextDelivery(after start: Date) -> Date {
-        var comps = Calendar.current.dateComponents([.year, .month, .day], from: start)
-        comps.hour = deliveryHour
-        comps.minute = deliveryMinute
-        let occ = Calendar.current.date(from: comps) ?? start
-        return occ > start ? occ : (Calendar.current.date(byAdding: .day, value: 1, to: occ) ?? occ)
-    }
-
-
-    /// "6h 34m" until the next visit; expose seconds in the final minute so the
-    /// short Profile test deadline visibly counts down.
+    /// The coordinator owns deadline resolution and display formatting.
     private var timeUntilDeliveryString: String {
-        let remaining = max(0, (cycleDeadline ?? cycleDeliveryDate()).timeIntervalSince(Date()))
-        let total = Int(remaining.rounded())
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 { return "\(h)h \(m)m" }
-        if m > 0 { return "\(m)m \(s)s" }
-        return "\(s)s"
+        digCycle.formattedRemaining()
     }
 
     private var isNamingFlowActive: Bool {
