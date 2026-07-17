@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// THE worm. A single, reusable definition of the mascot's shape and motion —
-/// configure it once, then draw it along any centerline (the splash word, a
-/// loader's track, anything). Callers never re-derive how the worm looks or
-/// moves; they only supply the path it should follow and, optionally, a per-
-/// point mask of where it's actively inching.
+/// THE worm. Outside the one-off splash transformation, every surface uses
+/// `character`, `Size`, and `crawlCenterline`. Screens may place the worm and
+/// trigger reactions, but they do not get to invent another body, size scale,
+/// or way of crawling.
 struct Worm {
     var color: Color = .black
     var eyeColor: Color? = nil
@@ -28,29 +27,50 @@ struct Worm {
     /// loop (0 = perfectly periodic).
     var gaitDrift: Double = 0.12
 
-    /// The lively crawler used while travelling (the splash).
+    /// The splash is deliberately its own word-drawing transformation.
     static let standard = Worm()
 
-    /// The same worm, idling: the full hump amount, but moving ~1/10th as fast —
-    /// a slow, deep breathing motion for when it's just sitting there (loaders,
-    /// the greeting) instead of actively crawling.
-    static let calm = Worm(
-        gaitHeightRatio: 2.6,
-        gaitSpeed: 5.0,
-        gaitStepiness: 0.1,
-        gaitDrift: 0.06
-    )
-
-    /// The learned/snacking worm used through onboarding and home. Keeping this
-    /// definition here makes the app share the exact same body language instead
-    /// of each surface re-creating the mascot's movement constants.
-    static let snacking = Worm(
+    /// The one persistent character used everywhere after the splash.
+    static let character = Worm(
         wobbleRatio: 0.06,
         gaitHeightRatio: 0.3,
         gaitSpeed: 2.4,
         gaitStepiness: 0.06,
         gaitDrift: 0.02
     )
+
+    /// The persistent body's dimensions. Growth changes this value; a screen
+    /// never applies its own scale to make a second, local version of the worm.
+    struct Size: Equatable {
+        var length: CGFloat
+        var thickness: CGFloat
+
+        static let seed = Size(length: 15, thickness: 16)
+        static let afterSelfie = Size(length: 30, thickness: 16)
+        static let afterMusic = Size(length: 118, thickness: 16)
+
+        /// Home begins at the exact size onboarding finished with. Every claimed
+        /// meal adds one durable growth step, so relaunches never shrink him.
+        static func earned(completedMeals: Int) -> Size {
+            let meals = CGFloat(max(0, completedMeals))
+            return Size(
+                length: afterMusic.length + meals * 34,
+                thickness: afterMusic.thickness + meals
+            )
+        }
+
+        var afterNextMeal: Size {
+            Size(length: length + 34, thickness: thickness + 1)
+        }
+
+        func interpolated(to target: Size, progress: CGFloat) -> Size {
+            let p = min(max(progress, 0), 1)
+            return Size(
+                length: length + (target.length - length) * p,
+                thickness: thickness + (target.thickness - thickness) * p
+            )
+        }
+    }
 
     /// A short disturbance that travels away from one point on the body. The
     /// home worm uses these for touch reactions, so they deform the same
@@ -66,6 +86,154 @@ struct Worm {
 }
 
 extension Worm {
+    /// The character's one travelling gait. The body keeps one arc length while
+    /// the rear anchors and the head reaches, the head pauses and plants, then
+    /// the rear gathers beneath the arch. `route` is only where he is going;
+    /// every proportion, pause, and irregularity belongs to the worm.
+    static func crawlCenterline(
+        along routePoints: [CGPoint],
+        size: Size,
+        progress rawProgress: Double,
+        seed: Double,
+        settlesAtEnd: Bool = false
+    ) -> [CGPoint] {
+        let route = CrawlRoute(routePoints)
+        guard route.totalLength > 0.001 else {
+            return straightCenterline(center: routePoints.first ?? .zero, length: size.length)
+        }
+
+        // A stride advances roughly one third of the body. Count is derived from
+        // the route so a screen cannot make him take giant, stretchy steps.
+        let targetAdvance = max(size.thickness * 1.15, size.length * 0.32)
+        let strideCount = max(1, Int(ceil(route.totalLength / targetAdvance)))
+
+        var distanceWeights: [CGFloat] = []
+        var timeWeights: [Double] = []
+        distanceWeights.reserveCapacity(strideCount)
+        timeWeights.reserveCapacity(strideCount)
+        for index in 0..<strideCount {
+            distanceWeights.append(CGFloat(0.88 + crawlNoise(seed, index, 0) * 0.24))
+            let occasionalLinger = crawlNoise(seed, index, 1) > 0.82 ? 0.28 : 0
+            timeWeights.append(0.86 + crawlNoise(seed, index, 2) * 0.28 + occasionalLinger)
+        }
+
+        let distanceWeightTotal = distanceWeights.reduce(0, +)
+        let timeWeightTotal = timeWeights.reduce(0, +)
+        let progress = min(max(rawProgress, 0), 1)
+        let timeTarget = progress * timeWeightTotal
+
+        var strideIndex = strideCount - 1
+        var elapsedWeight = 0.0
+        for index in 0..<strideCount {
+            let end = elapsedWeight + timeWeights[index]
+            if timeTarget < end || index == strideCount - 1 {
+                strideIndex = index
+                break
+            }
+            elapsedWeight = end
+        }
+        let localTime = min(max(
+            (timeTarget - elapsedWeight) / max(timeWeights[strideIndex], 0.001),
+            0
+        ), 1)
+
+        var distanceBefore: CGFloat = 0
+        if strideIndex > 0 {
+            distanceBefore = distanceWeights[..<strideIndex].reduce(0, +)
+        }
+        let centerStart = route.totalLength * distanceBefore / distanceWeightTotal
+        let advance = route.totalLength * distanceWeights[strideIndex] / distanceWeightTotal
+
+        // Each beat gets its own quiet timing. The planted pauses are real time,
+        // not just easing at the ends of one continuous slide.
+        let rearPause = 0.06 + crawlNoise(seed, strideIndex, 3) * 0.06
+        let reachDuration = 0.30 + crawlNoise(seed, strideIndex, 4) * 0.06
+        let frontPause = 0.09 + crawlNoise(seed, strideIndex, 5) * 0.06
+        let gatherDuration = 0.28 + crawlNoise(seed, strideIndex, 6) * 0.06
+        let reachEnd = rearPause + reachDuration
+        let frontPauseEnd = reachEnd + frontPause
+        let gatherEnd = min(0.96, frontPauseEnd + gatherDuration)
+
+        let fullSeparation = size.length * 0.96
+        let gatheredSeparation = max(size.length * 0.56, fullSeparation - advance)
+        var tailDistance = centerStart - gatheredSeparation / 2
+        var headDistance = centerStart + gatheredSeparation / 2
+
+        if localTime < rearPause {
+            // Rear planted. Hold the gathered arch before committing forward.
+        } else if localTime < reachEnd {
+            let reach = smootherstep((localTime - rearPause) / reachDuration)
+            headDistance += advance * CGFloat(reach)
+        } else if localTime < frontPauseEnd {
+            // Head planted. A tiny forward test keeps the pause alive without
+            // changing the worm's apparent length.
+            let pause = (localTime - reachEnd) / frontPause
+            let test = sin(pause * .pi) * min(Double(size.thickness) * 0.08, Double(advance) * 0.025)
+            headDistance += advance + CGFloat(test)
+        } else {
+            headDistance += advance
+            let gather = smootherstep((localTime - frontPauseEnd) / max(gatherEnd - frontPauseEnd, 0.001))
+            tailDistance += advance * CGFloat(gather)
+        }
+
+        // When a finite crawl ends, relax from the final gathered hold into the
+        // same straight resting body without a one-frame shape pop.
+        if settlesAtEnd, strideIndex == strideCount - 1, localTime > gatherEnd {
+            let relax = smootherstep((localTime - gatherEnd) / max(1 - gatherEnd, 0.001))
+            let currentSeparation = headDistance - tailDistance
+            let targetSeparation = size.length
+            let halfExpansion = (targetSeparation - currentSeparation) * CGFloat(relax) / 2
+            tailDistance -= halfExpansion
+            headDistance += halfExpansion
+        }
+
+        let archSkew = (crawlNoise(seed, strideIndex, 7) - 0.5) * 0.10
+        return constantLengthBody(
+            on: route,
+            tailDistance: tailDistance,
+            headDistance: headDistance,
+            bodyLength: size.length,
+            archSkew: archSkew
+        )
+    }
+
+    /// Finds the single-lobe arch whose sampled arc length matches the worm's
+    /// persistent body length. Reaching and gathering therefore reshape him;
+    /// they never stretch or shrink him.
+    private static func constantLengthBody(
+        on route: CrawlRoute,
+        tailDistance: CGFloat,
+        headDistance: CGFloat,
+        bodyLength: CGFloat,
+        archSkew: Double
+    ) -> [CGPoint] {
+        let steps = max(28, Int((bodyLength / 3).rounded(.up)))
+
+        func points(amplitude: CGFloat) -> [CGPoint] {
+            (0...steps).map { index in
+                let u = CGFloat(index) / CGFloat(steps)
+                let distance = tailDistance + (headDistance - tailDistance) * u
+                let base = route.point(at: distance)
+                let normal = route.normal(at: distance)
+                let warped = min(max(Double(u) + archSkew * Double(u * (1 - u)), 0), 1)
+                let lift = amplitude * CGFloat(sin(warped * .pi))
+                return CGPoint(x: base.x - normal.x * lift, y: base.y - normal.y * lift)
+            }
+        }
+
+        var low: CGFloat = 0
+        var high = bodyLength * 0.62
+        for _ in 0..<14 {
+            let middle = (low + high) / 2
+            if polylineLength(points(amplitude: middle)) < bodyLength {
+                low = middle
+            } else {
+                high = middle
+            }
+        }
+        return points(amplitude: (low + high) / 2)
+    }
+
     /// Draws the worm flowing along `centerline`. `gaitWeights`, if provided, is
     /// a per-point 0…1 mask of how much inching gait to apply (nil = full gait
     /// everywhere, e.g. a loader). `time` drives the gait and the breathing.
@@ -198,5 +366,88 @@ extension Worm {
         let la = max(0.0001, (ax * ax + ay * ay).squareRoot())
         let lb = max(0.0001, (bx * bx + by * by).squareRoot())
         return max(0, (ax * bx + ay * by) / (la * lb))
+    }
+
+    private static func smootherstep(_ x: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return t * t * t * (t * (t * 6 - 15) + 10)
+    }
+
+    private static func crawlNoise(_ seed: Double, _ stride: Int, _ channel: Int) -> Double {
+        let raw = sin(seed * 12.9898 + Double(stride) * 78.233 + Double(channel) * 37.719) * 43_758.5453
+        return raw - floor(raw)
+    }
+
+    private static func polylineLength(_ points: [CGPoint]) -> CGFloat {
+        guard points.count >= 2 else { return 0 }
+        return zip(points, points.dropFirst()).reduce(0) { partial, pair in
+            partial + hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y)
+        }
+    }
+
+    private struct CrawlRoute {
+        let points: [CGPoint]
+        let cumulative: [CGFloat]
+        let totalLength: CGFloat
+        let isClosed: Bool
+
+        init(_ raw: [CGPoint]) {
+            let fallback = raw.first ?? .zero
+            let usable = raw.count >= 2 ? raw : [fallback, CGPoint(x: fallback.x + 0.001, y: fallback.y)]
+            points = usable
+            var lengths = [CGFloat](repeating: 0, count: usable.count)
+            for index in 1..<usable.count {
+                lengths[index] = lengths[index - 1]
+                    + hypot(usable[index].x - usable[index - 1].x, usable[index].y - usable[index - 1].y)
+            }
+            cumulative = lengths
+            totalLength = lengths.last ?? 0
+            isClosed = hypot(usable.last!.x - usable.first!.x, usable.last!.y - usable.first!.y) < 1
+        }
+
+        func point(at rawDistance: CGFloat) -> CGPoint {
+            guard totalLength > 0.001 else { return points[0] }
+            var distance = rawDistance
+            if isClosed {
+                distance = distance.truncatingRemainder(dividingBy: totalLength)
+                if distance < 0 { distance += totalLength }
+            } else if distance < 0 {
+                let direction = Self.unit(from: points[1], subtracting: points[0])
+                return CGPoint(x: points[0].x + direction.x * distance, y: points[0].y + direction.y * distance)
+            } else if distance > totalLength {
+                let direction = Self.unit(from: points[points.count - 1], subtracting: points[points.count - 2])
+                let extra = distance - totalLength
+                return CGPoint(x: points.last!.x + direction.x * extra, y: points.last!.y + direction.y * extra)
+            }
+
+            var low = 0
+            var high = cumulative.count - 1
+            while low + 1 < high {
+                let middle = (low + high) / 2
+                if cumulative[middle] <= distance { low = middle }
+                else { high = middle }
+            }
+            let segmentLength = max(cumulative[high] - cumulative[low], 0.0001)
+            let t = (distance - cumulative[low]) / segmentLength
+            return CGPoint(
+                x: points[low].x + (points[high].x - points[low].x) * t,
+                y: points[low].y + (points[high].y - points[low].y) * t
+            )
+        }
+
+        func normal(at distance: CGFloat) -> CGPoint {
+            let epsilon = max(0.8, totalLength * 0.0008)
+            let before = point(at: distance - epsilon)
+            let after = point(at: distance + epsilon)
+            let direction = Self.unit(from: after, subtracting: before)
+            return CGPoint(x: -direction.y, y: direction.x)
+        }
+
+        private static func unit(from point: CGPoint, subtracting other: CGPoint) -> CGPoint {
+            let dx = point.x - other.x
+            let dy = point.y - other.y
+            let length = max(0.0001, hypot(dx, dy))
+            return CGPoint(x: dx / length, y: dy / length)
+        }
     }
 }

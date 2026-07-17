@@ -109,8 +109,20 @@ enum WormAPI {
         let album: String?
         let spotifyId: String?
         let spotifyUrl: String?
+        let previewUrl: String?
         let artworkUrl: String?
         let why: String?
+        let editorial: TodayEditorial?
+    }
+    struct TodayEditorial: Codable {
+        let journeyId: String
+        let journeyTitle: String
+        let routeSummary: String
+        let scoutQuery: String?
+        let scoutReason: String
+        let evidence: [String]
+        let confidence: Double?
+        let assayScore: Double?
     }
     struct TodayResponse: Codable {
         let ready: Bool

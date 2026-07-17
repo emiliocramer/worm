@@ -646,4 +646,97 @@ final class DiggingTests: XCTestCase {
         )
         XCTAssertEqual(candidate.trackKey, BrainNoveltySet.trackKey(title: "buried gem", artist: "UNKNOWN quartet"))
     }
+
+    // MARK: - Live digging log
+
+    func testDigLogNearbyStartTimesDoNotCollapseToOneJourney() {
+        var firstDraws = Set<Int>()
+        let seed: UInt64 = 800_000_000_000
+        for offset in 0..<24 {
+            var rng = DigRNG(seed: seed + UInt64(offset))
+            firstDraws.insert(Int.random(in: DiggingLog.journeys.indices, using: &rng))
+        }
+        XCTAssertGreaterThan(firstDraws.count, 6)
+    }
+
+    func testDigLogCyclesEveryAuthoredJourneyBeforeRepeating() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000.123)
+        let entries = DiggingLogView.schedule(
+            digStart: start,
+            delivery: start.addingTimeInterval(3_600)
+        )
+        let originDescriptions = Set(DiggingLog.journeys.compactMap { $0.steps.first?.desc })
+        let origins = entries
+            .map(\.step.desc)
+            .filter { expanded in
+                originDescriptions.contains { expanded.hasPrefix($0 + " >") }
+            }
+
+        XCTAssertGreaterThanOrEqual(origins.count, DiggingLog.journeys.count)
+        XCTAssertEqual(Set(origins.prefix(DiggingLog.journeys.count)).count, DiggingLog.journeys.count)
+
+        let firstFiveMinutes = entries
+            .filter { $0.date >= start && $0.date <= start.addingTimeInterval(300) }
+            .map(\.date)
+        let largestGap = zip(firstFiveMinutes, firstFiveMinutes.dropFirst())
+            .map { $1.timeIntervalSince($0) }
+            .max() ?? .infinity
+        XCTAssertLessThanOrEqual(largestGap, 25)
+    }
+
+    func testDigLogMostLinesCarryResearchDetail() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000.123)
+        let entries = DiggingLogView.schedule(
+            digStart: start,
+            delivery: start.addingTimeInterval(900)
+        )
+        let detailed = entries.filter { $0.step.desc.contains(" > ") }
+
+        XCTAssertFalse(entries.isEmpty)
+        XCTAssertGreaterThanOrEqual(
+            Double(detailed.count) / Double(entries.count),
+            0.95
+        )
+        XCTAssertTrue(entries.contains {
+            $0.step.verb == "OPENING" && $0.step.desc.components(separatedBy: " > ").count >= 2
+        })
+    }
+
+    func testDailyRecommendationDecodesEditorialJourney() throws {
+        let data = Data("""
+        {
+          "ready": true,
+          "cycleDate": "2026-07-19",
+          "deliveryHour": 9,
+          "deliveryMinute": 0,
+          "recommendations": [{
+            "rank": 1,
+            "title": "A Song",
+            "artist": "An Artist",
+            "album": "An Album",
+            "spotifyId": "track-1",
+            "spotifyUrl": "https://open.spotify.com/track/track-1",
+            "previewUrl": "https://cdn.shibuyaaa.com/preview.m4a",
+            "artworkUrl": "https://cdn.shibuyaaa.com/cover.jpg",
+            "why": "The source trail fits the way you listen.",
+            "editorial": {
+              "journeyId": "sourceDNA",
+              "journeyTitle": "Source DNA",
+              "routeSummary": "Move backward into the records beneath a loved scene.",
+              "scoutQuery": "deep soul source records year:1968-1974",
+              "scoutReason": "The trail points behind the revival into its source era.",
+              "evidence": ["soul is a durable genre signal"],
+              "confidence": 0.86,
+              "assayScore": 0.91
+            }
+          }]
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(WormAPI.TodayResponse.self, from: data)
+        let editorial = try XCTUnwrap(response.recommendations.first?.editorial)
+        XCTAssertEqual(editorial.journeyId, "sourceDNA")
+        XCTAssertEqual(editorial.journeyTitle, "Source DNA")
+        XCTAssertEqual(editorial.assayScore, 0.91)
+    }
 }

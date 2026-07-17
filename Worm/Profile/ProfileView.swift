@@ -361,6 +361,7 @@ struct ProfileView: View {
             }
             Button {
                 startFiveSecondDigTest()
+                dismiss()
             } label: {
                 Label("Set dig timer to 5 seconds", systemImage: "timer")
             }
@@ -987,6 +988,9 @@ private struct OnboardingReplayDemo: View {
     enum Phase { case onboarding, home }
 
     private static let demoWormNameKey = "worm.demo.name"
+    private static let demoDeliveryTimeChosenKey = "worm.demo.hasChosenDeliveryTime"
+    private static let demoDeliveryHourKey = "worm.demo.deliveryHour"
+    private static let demoDeliveryMinuteKey = "worm.demo.deliveryMinute"
 
     let onDismiss: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -1005,7 +1009,12 @@ private struct OnboardingReplayDemo: View {
                 .transition(.opacity)
             case .home:
                 NavigationStack {
-                    WormHomeView(wormNameKey: Self.demoWormNameKey)
+                    WormHomeView(
+                        wormNameKey: Self.demoWormNameKey,
+                        deliveryTimeChosenKey: Self.demoDeliveryTimeChosenKey,
+                        deliveryHourKey: Self.demoDeliveryHourKey,
+                        deliveryMinuteKey: Self.demoDeliveryMinuteKey
+                    )
                 }
                 .transition(.opacity)
             }
@@ -1013,9 +1022,15 @@ private struct OnboardingReplayDemo: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             UserDefaults.standard.removeObject(forKey: Self.demoWormNameKey)
+            UserDefaults.standard.removeObject(forKey: Self.demoDeliveryTimeChosenKey)
+            UserDefaults.standard.removeObject(forKey: Self.demoDeliveryHourKey)
+            UserDefaults.standard.removeObject(forKey: Self.demoDeliveryMinuteKey)
         }
         .onDisappear {
             UserDefaults.standard.removeObject(forKey: Self.demoWormNameKey)
+            UserDefaults.standard.removeObject(forKey: Self.demoDeliveryTimeChosenKey)
+            UserDefaults.standard.removeObject(forKey: Self.demoDeliveryHourKey)
+            UserDefaults.standard.removeObject(forKey: Self.demoDeliveryMinuteKey)
         }
         .overlay(alignment: .topLeading) {
             if phase == .home {

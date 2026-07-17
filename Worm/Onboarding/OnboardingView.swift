@@ -38,7 +38,7 @@ struct OnboardingView: View {
     @State private var spotifyAskRevealed = false
     @State private var spotifyButtonVisible = false
     /// The worm's learned size across the onboarding asks.
-    @State private var wormSize = OnboardingWormSize.seed
+    @State private var wormSize = Worm.Size.seed
     /// Music-success swallow state. This keeps the OAuth success connected to
     /// the same growth language as the selfie.
     @State private var spotifyContentHidden = false
@@ -86,17 +86,7 @@ struct OnboardingView: View {
 
     /// A barely-there dot of a worm — short body, almost no inch. It only comes
     /// alive when it starts to grow.
-    private let dotWorm = Worm(
-        wobbleRatio: 0.06,
-        gaitHeightRatio: 0.3,
-        gaitSpeed: 2.4,
-        gaitStepiness: 0.06,
-        gaitDrift: 0.02
-    )
-
-    /// Resting length/thickness of the dot, in points.
-    private let dotLength: CGFloat = 15
-    private let dotThickness: CGFloat = 16
+    private let dotWorm = Worm.character
 
     private var helloView: some View {
         GeometryReader { geo in
@@ -112,8 +102,7 @@ struct OnboardingView: View {
                     growthStart: growthStart,
                     screen: geo.size,
                     restCenter: CGPoint(x: W / 2, y: restY),
-                    dotLength: dotLength,
-                    dotThickness: dotThickness,
+                    restingSize: wormSize,
                     color: ink,
                     eyeColor: paper,
                     worm: dotWorm
@@ -653,11 +642,10 @@ private struct GrowingWorm: View {
     var growthStart: Double?
     var screen: CGSize
     var restCenter: CGPoint
-    var dotLength: CGFloat
-    var dotThickness: CGFloat
+    var restingSize: Worm.Size
     var color: Color
     var eyeColor: Color?
-    var worm: Worm = .calm
+    var worm: Worm = .character
     /// How long the full inflation takes.
     var duration: Double = 8.4
 
@@ -678,20 +666,21 @@ private struct GrowingWorm: View {
                     let fat = Self.finalThickness(for: screen)
                     let path = Self.growthPath(screen: screen, from: restCenter, finalThickness: fat)
                     let total = Self.length(of: path)
-                    let drawn = dotLength + (total - dotLength) * CGFloat(ease)
+                    let drawn = restingSize.length + (total - restingSize.length) * CGFloat(ease)
                     centerline = Self.prefix(path, length: drawn)
                     // Inflate slightly ahead of the stretch, like a balloon.
-                    w.thickness = dotThickness + (fat - dotThickness) * CGFloat(pow(ease, 0.7))
+                    w.thickness = restingSize.thickness
+                        + (fat - restingSize.thickness) * CGFloat(pow(ease, 0.7))
                     // Wriggle hard while small, settle as he fills in — a moving
                     // gait on a screen-wide body would crack the solid black.
                     w.gaitHeightRatio *= (1 - 0.85 * ease)
                 } else {
                     // Resting dot: a stubby horizontal nub with eyes.
-                    let x0 = restCenter.x - dotLength / 2
+                    let x0 = restCenter.x - restingSize.length / 2
                     centerline = (0...10).map {
-                        CGPoint(x: x0 + dotLength * CGFloat($0) / 10, y: restCenter.y)
+                        CGPoint(x: x0 + restingSize.length * CGFloat($0) / 10, y: restCenter.y)
                     }
-                    w.thickness = dotThickness
+                    w.thickness = restingSize.thickness
                 }
 
                 guard centerline.count >= 2 else { return }
@@ -860,7 +849,7 @@ private struct TasteRevealBackdrop: View {
 private struct TasteScanLoader: View {
     let ink: Color
     let paper: Color
-    let wormSize: OnboardingWormSize
+    let wormSize: Worm.Size
 
     var body: some View {
         TimelineView(.animation) { timeline in

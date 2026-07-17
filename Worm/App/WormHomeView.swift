@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import AVFoundation
 
 /// Home. A quiet forest clearing, and the worm — at the size he's earned —
 /// crawling in from offscreen left onto its moss bed.
@@ -21,9 +22,9 @@ struct WormHomeView: View {
     @AppStorage private var wormName: String
     @AppStorage("worm.askedNotificationPermission") private var askedNotificationPermission = false
     // The daily delivery time the user picks in the step before the base flow.
-    @AppStorage(NodeProgression.hasChosenDeliveryTimeKey) private var hasChosenDeliveryTime = false
-    @AppStorage(NodeProgression.deliveryHourKey) private var deliveryHour = 20
-    @AppStorage(NodeProgression.deliveryMinuteKey) private var deliveryMinute = 0
+    @AppStorage private var hasChosenDeliveryTime: Bool
+    @AppStorage private var deliveryHour: Int
+    @AppStorage private var deliveryMinute: Int
     @AppStorage(NodeProgression.deliveryTestDeadlineKey) private var deliveryTestDeadlineRaw: Double = 0
     // The delivery-time wheel's live selection (defaults to 8:00 pm).
     @State private var pickerHour12 = 8
@@ -51,8 +52,8 @@ struct WormHomeView: View {
     @State private var entranceStart: Double?
     /// The gulp, in the exact grammar the onboarding taught.
     @State private var gulpStart: Double?
-    @State private var fromSize = OnboardingWormSize.seed
-    @State private var toSize = OnboardingWormSize.seed
+    @State private var fromSize = Worm.Size.seed
+    @State private var toSize = Worm.Size.seed
     /// The one morsel currently on screen (restraint: never a rain of icons).
     @State private var morsel: FeedMorsel?
     @State private var morselPhase = MorselPhase.offscreen
@@ -111,6 +112,21 @@ struct WormHomeView: View {
     @State private var homeControlsVisible: Bool
     @State private var forestBuildTask: Task<Void, Never>?
     @State private var showHiddenProfile = false
+    @State private var revealedSongKeys: Set<String> = []
+    @State private var heartedSongKeys: Set<String> = []
+    @State private var previewPlayer: AVPlayer?
+    @State private var playingSongKey: String?
+    @State private var selectedEditorialSongKey: String?
+    /// The quiet explanation sheet available while the worm is out digging.
+    @State private var diggingInfoVisible = false
+    /// Kept separate from the sheet so the system confirmation can be presented
+    /// above it without losing the glass context underneath.
+    @State private var stopDiggingConfirmationVisible = false
+    /// A short handoff after the daily reveal, before the live digging surface
+    /// takes over for the next drop.
+    @State private var digInitializationVisible = false
+    @State private var digInitializationTask: Task<Void, Never>?
+    @State private var debugRevealInFlight = false
 
     private enum MorselPhase { case offscreen, hovering, fed, gone }
     private enum NamingStep { case intro, entry }
@@ -122,29 +138,46 @@ struct WormHomeView: View {
     private var wormColor: Color { progression.state.activeCosmetic?.wormColor ?? ink }
     private var wormEyeColor: Color { progression.state.activeCosmetic?.eyeColor ?? paper }
     private let wormEntranceDelay = 0.35
-    private let wormEntranceDuration = 2.9
+    private let wormEntranceDuration = 6.0
     private let wormEntranceSettleDuration = 0.7
     private let forestBuildDuration = 1.9
     private let buildsForestOnEntry: Bool
     private let forestBuildDelay: Double
+    /// Preview-only entry state. This keeps the dedicated canvas on the actual
+    /// Home composition without depending on persistent setup data.
+    private let previewsDiggingState: Bool
+    /// The Profile FTUE replay owns separate delivery preferences and must not
+    /// alter the real user's notification schedule or backend cycle.
+    private let isDeliveryTimeDemo: Bool
 
     init(
         wormNameKey: String = "worm.name",
+        deliveryTimeChosenKey: String = NodeProgression.hasChosenDeliveryTimeKey,
+        deliveryHourKey: String = NodeProgression.deliveryHourKey,
+        deliveryMinuteKey: String = NodeProgression.deliveryMinuteKey,
         buildsForestOnEntry: Bool = false,
-        forestBuildDelay: Double = 0
+        forestBuildDelay: Double = 0,
+        previewsDiggingState: Bool = false
     ) {
         self.buildsForestOnEntry = buildsForestOnEntry
         self.forestBuildDelay = forestBuildDelay
+        self.previewsDiggingState = previewsDiggingState
+        self.isDeliveryTimeDemo = deliveryTimeChosenKey != NodeProgression.hasChosenDeliveryTimeKey
         _wormName = AppStorage(wrappedValue: "", wormNameKey)
+        _hasChosenDeliveryTime = AppStorage(wrappedValue: false, deliveryTimeChosenKey)
+        _deliveryHour = AppStorage(wrappedValue: 20, deliveryHourKey)
+        _deliveryMinute = AppStorage(wrappedValue: 0, deliveryMinuteKey)
         _forestBuildProgress = State(initialValue: buildsForestOnEntry ? 0 : 1)
         _homeControlsVisible = State(initialValue: !buildsForestOnEntry)
         let name = UserDefaults.standard.string(forKey: wormNameKey) ?? ""
         let hasNamedWorm = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasChosenDelivery = UserDefaults.standard.bool(forKey: NodeProgression.hasChosenDeliveryTimeKey)
+        let hasChosenDelivery = UserDefaults.standard.bool(forKey: deliveryTimeChosenKey)
         // Resolve an already-running dig before `body` first evaluates. Waiting
         // until `onAppear` lets the home worm and its tag render for one frame.
         _deliveryFlow = State(initialValue:
-            !DevFlags.dailyFoodJourneyEnabled && hasNamedWorm && hasChosenDelivery ? .waiting : nil
+            previewsDiggingState || (!DevFlags.dailyFoodJourneyEnabled && hasNamedWorm && hasChosenDelivery)
+                ? .waiting
+                : nil
         )
     }
 
@@ -194,9 +227,24 @@ struct WormHomeView: View {
 
                     // The living digging log — the waiting-screen background.
                     if isWaiting {
-                        DiggingLogView(deliveryHour: deliveryHour, deliveryMinute: deliveryMinute)
+                        DiggingLogView(
+                            deliveryHour: deliveryHour,
+                            deliveryMinute: deliveryMinute,
+                            previewFast: previewsDiggingState
+                        )
                             .transition(.opacity)
                             .zIndex(2)
+
+                        DiggingWanderer(
+                            size: earnedSize,
+                            color: wormColor,
+                            eyeColor: wormEyeColor,
+                            wiggles: wormWiggles,
+                            onTap: reactToWormTap
+                        )
+                        .ignoresSafeArea()
+                        .zIndex(8)
+
                     }
 
                     if DevFlags.sceneEnabled {
@@ -490,46 +538,10 @@ struct WormHomeView: View {
 
                     // Dig complete — the worm's home with what he found.
                     if deliveryFlow == .arrived {
-                        VStack(spacing: 18) {
-                            VStack(spacing: 6) {
-                                Text("\(wormDisplayName ?? "he")'s back")
-                                    .font(.system(size: 30, weight: .bold, design: .serif))
-                                    .foregroundStyle(ink)
-                                Text("dug you up 3 songs")
-                                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                                    .foregroundStyle(ink.opacity(0.6))
-                            }
-                            VStack(spacing: 8) {
-                                ForEach(Array(foundSongs.enumerated()), id: \.offset) { _, song in
-                                    HStack(spacing: 12) {
-                                        songArtwork(song)
-                                            .frame(width: 46, height: 46)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(ink.opacity(0.1)))
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(song.title)
-                                                .font(.system(size: 16, weight: .semibold, design: .serif))
-                                                .foregroundStyle(ink)
-                                                .lineLimit(1)
-                                            Text(song.artist)
-                                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                                .foregroundStyle(ink.opacity(0.55))
-                                                .lineLimit(1)
-                                        }
-                                        Spacer(minLength: 0)
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ink.opacity(0.05)))
-                                }
-                            }
-                            .frame(maxWidth: 300)
-                        }
-                        .frame(maxWidth: 340)
-                        .position(x: W / 2, y: H * 0.34)
-                        .transition(.opacity)
-                        .zIndex(5)
+                        arrivalReveal
+                            .frame(maxWidth: 360)
+                            .position(x: W / 2, y: H * 0.37)
+                            .zIndex(5)
 
                         filledCTA("see you tomorrow") { continueAfterArrival() }
                             .frame(maxWidth: 300)
@@ -580,9 +592,9 @@ struct WormHomeView: View {
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay(alignment: .top) {
-            if isWaiting, homeControlsVisible {
+            if isWaiting, homeControlsVisible, !diggingInfoVisible, !digInitializationVisible {
                 waitingHeader
-                    .offset(y: 100)
+                    .offset(y: 42)
                     .transition(.opacity)
             } else if DevFlags.dailyFoodJourneyEnabled,
                !isNamingFlowActive, !namingHandoffVisible, homeControlsVisible {
@@ -615,8 +627,31 @@ struct WormHomeView: View {
                 .allowsHitTesting(homeChromeVisible)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if isWaiting, homeControlsVisible, !diggingInfoVisible {
+                Button {
+                    Haptics.impact(.light)
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        diggingInfoVisible = true
+                    }
+                } label: {
+                    Image(systemName: "info")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.72))
+                        .frame(width: 38, height: 38)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.48), lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("About digging")
+                .padding(.leading, 18)
+                .padding(.top, 14)
+                .transition(.opacity)
+                .zIndex(12)
+            }
+        }
         .overlay(alignment: .topTrailing) {
-            if homeControlsVisible, !isNamingFlowActive, !namingHandoffVisible {
+            if homeControlsVisible, !isNamingFlowActive, !namingHandoffVisible, !diggingInfoVisible, !digInitializationVisible {
                 // Intentionally invisible: double-tap the top-right corner to open
                 // the profile without adding chrome to the forest or waiting log.
                 Color.clear
@@ -644,6 +679,18 @@ struct WormHomeView: View {
                     .animation(.spring(response: 0.55, dampingFraction: 0.78), value: namingButtonVisible)
             }
         }
+        .overlay {
+            if isWaiting, diggingInfoVisible {
+                diggingInfoOverlay
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            if digInitializationVisible {
+                digInitializationOverlay
+                    .transition(.opacity)
+            }
+        }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification), perform: updateKeyboardHeight)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification), perform: updateKeyboardHeight)
@@ -651,6 +698,8 @@ struct WormHomeView: View {
         .onDisappear {
             forestBuildTask?.cancel()
             forestBuildTask = nil
+            digInitializationTask?.cancel()
+            digInitializationTask = nil
             entranceStart = nil
             nameFieldFocused = false
             keyboardHeight = 0
@@ -667,11 +716,14 @@ struct WormHomeView: View {
         .onChange(of: deliveryFlow) { _, step in
             if step == .waiting {
                 beginDigCycle()
+            } else if step == .arrived {
+                startArrivalReveal()
             }
         }
         .onChange(of: deliveryTestDeadlineRaw) { _, deadline in
             guard deadline > 0 else { return }
             digStartRaw = Date().timeIntervalSinceReferenceDate
+            beginDigInitialization()
             withAnimation(.easeInOut(duration: 0.3)) { deliveryFlow = .waiting }
             beginDigCycle()
         }
@@ -691,11 +743,20 @@ struct WormHomeView: View {
         .fullScreenCover(item: $capturingEntry) { entry in
             PromptCaptureView(
                 entry: entry,
+                wormSize: toSize,
                 ink: ink,
                 paper: paper,
                 onCancel: { cancelCapture() },
                 onSubmit: { value in submitCapture(entry: entry, value: value) }
             )
+        }
+        .alert("Stop digging?", isPresented: $stopDiggingConfirmationVisible) {
+            Button("Keep digging", role: .cancel) { }
+            Button("Stop digging", role: .destructive) {
+                stopDigging()
+            }
+        } message: {
+            Text("Are you sure you want to stop digging?")
         }
     }
 
@@ -806,29 +867,137 @@ struct WormHomeView: View {
     // MARK: - Delivery flow UI
 
     /// The waiting-screen top header: "i'll be back in Hh:Mm", counting down to the
-    /// next daily visit. Ticks each second; colors adapt to the sky behind it.
+    /// next daily visit. The status label gently breathes so it reads as active.
     private var waitingHeader: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            VStack(spacing: 4) {
-                Text("I'll be back in")
-                    .font(.system(size: 22, weight: .semibold, design: .serif))
-                    .foregroundStyle(ink.opacity(0.8))
+        TimelineView(.animation) { context in
+            let phase = (sin(context.date.timeIntervalSinceReferenceDate * .pi / 1.8) + 1) / 2
+            VStack(spacing: 1) {
+                Text("Digging")
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.65 + 0.20 * phase))
                 Text(timeUntilDeliveryString)
-                    .font(.system(size: 46, weight: .heavy, design: .serif))
+                    .font(.system(size: 32, weight: .bold, design: .serif))
                     .monospacedDigit()
                     .foregroundStyle(ink)
             }
             .multilineTextAlignment(.center)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 12)
-            // A soft paper cushion (blurred, no hard edge) so the copy reads cleanly
-            // over the running log beneath it.
-            .background {
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(paper)
-                    .blur(radius: 14)
-                    .padding(4)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+        }
+    }
+
+    /// The waiting screen's lightweight explanation, deliberately using the same
+    /// material field as the apple-detail overlays.
+    private var diggingInfoOverlay: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { dismissDiggingInfo() }
+
+            VStack(spacing: 14) {
+                Spacer()
+
+                Text("\(wormDisplayName ?? "he") is out digging")
+                    .font(.system(size: 28, weight: .bold, design: .serif))
+                    .foregroundStyle(ink)
+                    .multilineTextAlignment(.center)
+
+                Text("he's scouring the internet, turning over rocks, finding songs that he knows you'll love")
+                    .font(.system(size: 17, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.62))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .padding(.horizontal, 34)
+
+                Spacer()
+
+                Button { dismissDiggingInfo() } label: {
+                    Text("sounds good")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(paper)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(ink, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    stopDiggingConfirmationVisible = true
+                } label: {
+                    Text("stop digging")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .underline()
+                        .foregroundStyle(ink.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
             }
+            .padding(.horizontal, 32)
+            .padding(.bottom, 28)
+
+            VStack {
+                HStack {
+                    Spacer()
+
+                    Button { dismissDiggingInfo() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(ink.opacity(0.58))
+                            .frame(width: 38, height: 38)
+                            .background(paper.opacity(0.94), in: Circle())
+                            .overlay(Circle().stroke(ink.opacity(0.10), lineWidth: 0.8))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.trailing, 18)
+                .padding(.top, 14)
+
+                Spacer()
+            }
+        }
+    }
+
+    private var digInitializationOverlay: some View {
+        ZStack {
+            paper.ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                Text("INITIALIZING \(wormDisplayName?.uppercased() ?? "WORM")")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .tracking(1.1)
+                    .foregroundStyle(ink)
+
+                Text("starting today's dig")
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.55))
+            }
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 32)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Initializing \(wormDisplayName ?? "worm"), starting today's dig")
+    }
+
+    private func dismissDiggingInfo() {
+        Haptics.impact(.light)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            diggingInfoVisible = false
+        }
+    }
+
+    private func stopDigging() {
+        diggingInfoVisible = false
+        digStartRaw = 0
+        deliveryTestDeadlineRaw = 0
+        digCycle.reset(input: digCycleInput, testDeadline: 0)
+        digScheduler.cancelDailyDig()
+        hasChosenDeliveryTime = false
+        Haptics.impact(.medium)
+        withAnimation(.easeInOut(duration: 0.45)) {
+            deliveryFlow = nil
         }
     }
 
@@ -1178,15 +1347,10 @@ struct WormHomeView: View {
         }
     }
 
-    /// The worm's earned size: every populated node stretches him. Same body
-    /// grammar as onboarding (seed 15pt; selfie+Spotify landed at ~118pt).
-    private var earnedSize: OnboardingWormSize {
-        let populated = profile.populatedSliceCount
-        let completed = progression.state.completedEntryIDs.count
-        return OnboardingWormSize(
-            length: 15 + CGFloat(populated) * 34 + CGFloat(completed) * 22 + CGFloat(min(profile.insights.count, 6)) * 5,
-            thickness: 16 + CGFloat(min(populated + completed, 12))
-        )
+    /// The one persistent size. Home starts exactly where onboarding finished;
+    /// each claimed meal advances the same durable growth step.
+    private var earnedSize: Worm.Size {
+        Worm.Size.earned(completedMeals: progression.state.completedEntryIDs.count)
     }
 
     // MARK: - Morsels (food drifts in for whatever he hasn't eaten yet)
@@ -1308,6 +1472,7 @@ struct WormHomeView: View {
             try? await Task.sleep(for: .seconds(2.0))
             await MainActor.run {
                 pickerLiveTime = deliveryTimeAsHours
+                beginDigInitialization()
                 withAnimation(.easeInOut(duration: 0.7)) { deliveryFlow = .waiting }
             }
         }
@@ -1318,6 +1483,19 @@ struct WormHomeView: View {
     /// date was shown so we don't replay it after "continue".
     private func arriveHome() {
         guard deliveryFlow == .waiting else { return }
+        // The five-second Profile control previews the result screen. Its
+        // deadline is intentionally synthetic, so it forces a fresh batch at
+        // expiry instead of sitting at 0s on the normal delivery path.
+        if deliveryTestDeadlineRaw > 0 {
+            forceRevealTodayNow()
+            return
+        }
+        // A completed timer is not a completed dig. Stay on the digging surface
+        // until three real backend recommendations have actually arrived.
+        guard digCycle.recommendations.count >= 3 else {
+            syncFromBackend()
+            return
+        }
         digCycle.markRevealed()
         Haptics.success()
         withAnimation(.easeInOut(duration: 0.7)) { deliveryFlow = .arrived }
@@ -1332,15 +1510,32 @@ struct WormHomeView: View {
         digStartRaw = 0
         digCycle.reset(input: digCycleInput, testDeadline: 0)
         ensureDailyDigScheduled()
+        beginDigInitialization()
         withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .waiting }
     }
 
-    /// The three songs to reveal: the cached upcoming picks (with exact covers) once
-    /// they've landed, otherwise placeholders until the fetch finishes.
+    private func beginDigInitialization() {
+        digInitializationTask?.cancel()
+        digInitializationVisible = true
+        digInitializationTask = Task {
+            // Let the status land as a distinct beat before the log starts to
+            // show through, rather than crossfading immediately on tap.
+            try? await Task.sleep(for: .seconds(2.2))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.8)) {
+                    digInitializationVisible = false
+                }
+                digInitializationTask = nil
+            }
+        }
+    }
+
+    /// Only catalog-verified backend picks are eligible for the finished reveal.
+    /// An unfinished/failed dig stays in the waiting state instead of presenting
+    /// local demo titles as if they were persisted recommendations.
     private var foundSongs: [FoundSong] {
-        if !digCycle.recommendations.isEmpty { return Array(digCycle.recommendations.prefix(3)) }
-        return DiggingLog.finds(seed: UInt64(bitPattern: Int64(max(0, digStartRaw).rounded())))
-            .map { FoundSong(title: $0.title, artist: $0.artist, artwork: nil) }
+        Array(digCycle.recommendations.prefix(3))
     }
 
     /// The exact album cover for a pick, or a music-note placeholder when none was
@@ -1369,6 +1564,208 @@ struct WormHomeView: View {
         }
     }
 
+    // MARK: - Arrival reveal
+
+    private var arrivalReveal: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 4) {
+                Text("\(wormDisplayName ?? "he")'s back")
+                    .font(.system(size: 32, weight: .bold, design: .serif))
+                    .foregroundStyle(ink)
+                Text("dug you up three songs")
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.56))
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(foundSongs, id: \.self) { song in
+                    arrivalSongCard(song)
+                }
+            }
+
+            if let song = selectedEditorialSong {
+                arrivalEditorial(song)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .padding(.horizontal, 14)
+    }
+
+    private func arrivalSongCard(_ song: FoundSong) -> some View {
+        let key = songKey(song)
+        let isVisible = revealedSongKeys.contains(key)
+        let isPlaying = playingSongKey == key
+        let isHearted = heartedSongKeys.contains(key)
+        let canPreview = song.previewURL.flatMap(URL.init(string:)) != nil
+
+        return VStack(alignment: .leading, spacing: 7) {
+            ZStack {
+                songArtwork(song)
+                    .frame(width: 102, height: 102)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ink.opacity(0.12), lineWidth: 1))
+
+                Button { togglePreview(for: song) } label: {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 40, height: 40)
+                        .background(ink, in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.8), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canPreview)
+                .opacity(canPreview ? 1 : 0.32)
+                .accessibilityLabel(isPlaying ? "Pause preview" : "Play preview")
+
+                Button {
+                    Haptics.impact(.light)
+                    if isHearted { heartedSongKeys.remove(key) }
+                    else { heartedSongKeys.insert(key) }
+                } label: {
+                    Image(systemName: isHearted ? "heart.fill" : "heart")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isHearted ? Color.red : ink)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.94), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .offset(x: 39, y: -39)
+                .accessibilityLabel(isHearted ? "Remove heart" : "Heart song")
+            }
+
+            Text(song.title)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink)
+                .lineLimit(2)
+                .frame(height: 34, alignment: .topLeading)
+            Text(song.artist)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.55))
+                .lineLimit(1)
+            Button { openInSpotify(song) } label: {
+                Text("view in Spotify")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.62))
+                    .underline()
+            }
+            .buttonStyle(.plain)
+
+            if song.why != nil || song.editorial != nil {
+                Button {
+                    Haptics.impact(.light)
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        selectedEditorialSongKey = key
+                    }
+                } label: {
+                    Text(selectedEditorialSongKey == key ? "why this ↓" : "why this")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink.opacity(selectedEditorialSongKey == key ? 0.9 : 0.5))
+                        .underline()
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(width: 102, alignment: .leading)
+        .opacity(isVisible ? 1 : 0)
+        .scaleEffect(isVisible ? 1 : 0.72, anchor: .bottom)
+        .offset(y: isVisible ? 0 : 24)
+    }
+
+    private func songKey(_ song: FoundSong) -> String { "\(song.title)|\(song.artist)" }
+
+    private var selectedEditorialSong: FoundSong? {
+        guard let selectedEditorialSongKey else { return foundSongs.first }
+        return foundSongs.first { songKey($0) == selectedEditorialSongKey } ?? foundSongs.first
+    }
+
+    @ViewBuilder
+    private func arrivalEditorial(_ song: FoundSong) -> some View {
+        if let editorial = song.editorial {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("THE JOURNEY")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.4))
+                    Spacer()
+                    Text(editorial.journeyTitle.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.72))
+                }
+                Text(editorial.routeSummary)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.66))
+                    .lineLimit(2)
+                if let query = editorial.scoutQuery, !query.isEmpty {
+                    Text("SCOUTED  \(query)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(ink.opacity(0.44))
+                        .lineLimit(1)
+                }
+                if let why = song.why, !why.isEmpty {
+                    Text(why)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.88))
+                        .lineLimit(3)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ink.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ink.opacity(0.1), lineWidth: 1))
+        } else if let why = song.why, !why.isEmpty {
+            Text(why)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.82))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(ink.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    private func startArrivalReveal() {
+        previewPlayer?.pause()
+        previewPlayer = nil
+        playingSongKey = nil
+        revealedSongKeys = []
+        let songs = foundSongs
+        selectedEditorialSongKey = songs.first.map(songKey)
+        Task {
+            for (index, song) in songs.enumerated() {
+                try? await Task.sleep(for: .milliseconds(index == 0 ? 120 : 260))
+                guard deliveryFlow == .arrived else { return }
+                withAnimation(.spring(response: 0.48, dampingFraction: 0.72)) {
+                    revealedSongKeys.insert(songKey(song))
+                }
+            }
+        }
+    }
+
+    private func togglePreview(for song: FoundSong) {
+        let key = songKey(song)
+        if playingSongKey == key {
+            previewPlayer?.pause()
+            playingSongKey = nil
+            return
+        }
+        guard let previewURL = song.previewURL, let url = URL(string: previewURL) else { return }
+        previewPlayer?.pause()
+        previewPlayer = AVPlayer(url: url)
+        previewPlayer?.play()
+        playingSongKey = key
+    }
+
+    private func openInSpotify(_ song: FoundSong) {
+        let url: URL?
+        if let raw = song.spotifyURL, let spotifyURL = URL(string: raw) {
+            url = spotifyURL
+        } else {
+            let query = "\(song.title) \(song.artist)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+            url = query.flatMap { URL(string: "https://open.spotify.com/search/\($0)") }
+        }
+        if let url { UIApplication.shared.open(url) }
+    }
+
     // MARK: - Recommendation dig boundary
 
     private var digCycleInput: DigCycleSyncInput {
@@ -1387,7 +1784,7 @@ struct WormHomeView: View {
     }
 
     private func syncFromBackend() {
-        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
+        guard !isDeliveryTimeDemo, !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
         let input = digCycleInput
         let testDeadline = deliveryTestDeadlineRaw
         Task {
@@ -1401,15 +1798,24 @@ struct WormHomeView: View {
         guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
         if digStartRaw == 0 { digStartRaw = Date().timeIntervalSinceReferenceDate }
         digCycle.beginWaiting(input: digCycleInput, testDeadline: deliveryTestDeadlineRaw)
-        syncFromBackend()
+        if !isDeliveryTimeDemo { syncFromBackend() }
     }
 
     private func forceRevealTodayNow() {
+        guard !debugRevealInFlight else { return }
+        debugRevealInFlight = true
         let input = digCycleInput
         Task {
             await digCycle.forceReveal(input: input)
-            Haptics.success()
-            withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .arrived }
+            await MainActor.run {
+                defer { debugRevealInFlight = false }
+                guard digCycle.recommendations.count >= 3 else {
+                    withAnimation(.easeInOut(duration: 0.3)) { deliveryFlow = .waiting }
+                    return
+                }
+                Haptics.success()
+                withAnimation(.easeInOut(duration: 0.6)) { deliveryFlow = .arrived }
+            }
         }
     }
 
@@ -1417,7 +1823,7 @@ struct WormHomeView: View {
     /// the chosen delivery time. Journey-off waiting flow only — the journey path
     /// has its own unlock notifications. Safe to call repeatedly (stable id).
     private func ensureDailyDigScheduled() {
-        guard !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
+        guard !isDeliveryTimeDemo, !DevFlags.dailyFoodJourneyEnabled, hasChosenDeliveryTime else { return }
         digScheduler.scheduleDailyDig(
             hour: deliveryHour,
             minute: deliveryMinute,
@@ -1921,10 +2327,7 @@ struct WormHomeView: View {
     private func settleGrow() async {
         try? await Task.sleep(for: .seconds(0.66))
         await MainActor.run {
-            let grown = OnboardingWormSize(
-                length: earnedSize.length + 34,
-                thickness: earnedSize.thickness + 1
-            )
+            let grown = earnedSize.afterNextMeal
             fromSize = earnedSize
             toSize = grown
             gulpStart = Date().timeIntervalSinceReferenceDate
@@ -2267,8 +2670,8 @@ private struct HomeWorm: View {
     var entranceStart: Double?
     var gulpStart: Double?
     var restCenter: CGPoint
-    var fromSize: OnboardingWormSize
-    var toSize: OnboardingWormSize
+    var fromSize: Worm.Size
+    var toSize: Worm.Size
     var entranceDuration: Double
     var settleDuration: Double
     var color: Color
@@ -2276,7 +2679,7 @@ private struct HomeWorm: View {
     var wiggles: [Worm.Wiggle]
     var onTap: (Double) -> Void
 
-    private static let worm = Worm.snacking
+    private static let worm = Worm.character
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -2304,10 +2707,11 @@ private struct HomeWorm: View {
                             length: length,
                             thickness: thickness,
                             elapsed: dt,
-                            duration: crawlDuration,
-                            strides: 6
+                            duration: crawlDuration
                         )
-                        gaitWeights = Array(repeating: 0.22, count: centerline.count)
+                        // Travel is already the canonical head-reach/tail-gather
+                        // gait. Do not layer a second travelling hump over it.
+                        gaitWeights = Array(repeating: 0, count: centerline.count)
                     } else {
                         isEntering = false
                         let settle = dt - crawlDuration
@@ -2427,8 +2831,8 @@ private struct HomeWorm: View {
         entranceStart: Double?,
         gulpStart: Double?,
         restCenter: CGPoint,
-        fromSize: OnboardingWormSize,
-        toSize: OnboardingWormSize,
+        fromSize: Worm.Size,
+        toSize: Worm.Size,
         entranceDuration: Double,
         settleDuration: Double
     ) -> CGPoint {
@@ -2446,8 +2850,7 @@ private struct HomeWorm: View {
                     length: length,
                     thickness: thickness,
                     elapsed: dt,
-                    duration: entranceDuration,
-                    strides: 6
+                    duration: entranceDuration
                 )
             } else {
                 isEntering = false
@@ -2485,67 +2888,115 @@ private struct HomeWorm: View {
         length: CGFloat,
         thickness: CGFloat,
         elapsed: Double,
-        duration: Double,
-        strides: Int
+        duration: Double
     ) -> [CGPoint] {
-        let p = min(max(elapsed / duration, 0), 1)
-        guard p < 1 else { return Worm.straightCenterline(center: restCenter, length: length) }
-
-        let strideCount = max(1, strides)
         let hiddenHead = -max(96, thickness * 5)
-        let finalHead = restCenter.x + length / 2
-        let strideDistance = (finalHead - hiddenHead) / CGFloat(strideCount)
-        let scaled = min(Double(strideCount) - 0.0001, p * Double(strideCount))
-        let strideIndex = CGFloat(floor(scaled))
-        let phase = scaled - Double(strideIndex)
-
-        let headBase = hiddenHead + strideIndex * strideDistance
-        let tailBase = headBase - length
-        let reachPortion = 0.52
-        let tailX: CGFloat
-        let headX: CGFloat
-        let arch: CGFloat
-
-        if phase < reachPortion {
-            let reach = easeOutCubic(phase / reachPortion)
-            tailX = tailBase
-            headX = headBase + strideDistance * CGFloat(reach)
-            arch = thickness * 0.55 * CGFloat(sin(reach * .pi))
-        } else {
-            let gather = (phase - reachPortion) / (1 - reachPortion)
-            let eased = smoothstep(gather)
-            tailX = tailBase + strideDistance * CGFloat(eased)
-            headX = headBase + strideDistance
-            arch = thickness * 2.15 * CGFloat(sin(gather * .pi))
-        }
-
-        return archedCenterline(tailX: tailX, headX: headX, y: restCenter.y, arch: arch)
+        let hiddenCenter = CGPoint(x: hiddenHead - length / 2, y: restCenter.y)
+        return Worm.crawlCenterline(
+            along: [hiddenCenter, restCenter],
+            size: Worm.Size(length: length, thickness: thickness),
+            progress: elapsed / max(duration, 0.001),
+            seed: 11,
+            settlesAtEnd: true
+        )
     }
 
     private static func hiddenCenterline(restCenter: CGPoint, length: CGFloat, thickness: CGFloat) -> [CGPoint] {
         let headX = -max(96, thickness * 5)
-        return archedCenterline(tailX: headX - length, headX: headX, y: restCenter.y, arch: 0)
-    }
-
-    private static func archedCenterline(tailX: CGFloat, headX: CGFloat, y: CGFloat, arch: CGFloat) -> [CGPoint] {
-        let distance = max(1, headX - tailX)
-        let steps = max(22, Int((distance / 4).rounded(.up)))
-        return (0...steps).map { i in
-            let u = CGFloat(i) / CGFloat(steps)
-            return CGPoint(
-                x: tailX + distance * u,
-                y: y - arch * CGFloat(sin(Double(u) * .pi))
-            )
-        }
-    }
-
-    private static func easeOutCubic(_ x: Double) -> Double {
-        1 - pow(1 - min(max(x, 0), 1), 3)
+        return Worm.straightCenterline(
+            center: CGPoint(x: headX - length / 2, y: restCenter.y),
+            length: length
+        )
     }
 
     private static func smoothstep(_ x: Double) -> Double {
         let t = min(max(x, 0), 1)
         return t * t * (3 - 2 * t)
+    }
+}
+
+/// The worm is out working during a dig: the same body and gather/lunge gait as
+/// Home's entrance, travelling a slow circuit over the research surface.
+private struct DiggingWanderer: View {
+    let size: Worm.Size
+    let color: Color
+    let eyeColor: Color
+    let wiggles: [Worm.Wiggle]
+    let onTap: (Double) -> Void
+
+    private static let circuitDuration = 38.0
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let time = timeline.date.timeIntervalSinceReferenceDate
+                let centerline = Self.centerline(at: time, in: size, wormSize: self.size)
+                var worm = Worm.character
+                worm.color = color
+                worm.eyeColor = eyeColor
+                worm.thickness = self.size.thickness
+                worm.draw(
+                    in: context,
+                    centerline: centerline,
+                    time: time,
+                    // The centerline already performs the actual reach/gather:
+                    // front moves while rear anchors, then rear moves while front
+                    // anchors. A second travelling hump makes both ends appear to
+                    // move and breaks that inchworm read.
+                    gaitWeights: Array(repeating: 0, count: centerline.count),
+                    wiggles: wiggles
+                )
+            }
+            // The full-screen canvas is visual only. Without this, its clear
+            // pixels sit above the digging log and swallow every source-link tap.
+            .allowsHitTesting(false)
+            .overlay {
+                GeometryReader { proxy in
+                    let time = timeline.date.timeIntervalSinceReferenceDate
+                    let centerline = Self.centerline(at: time, in: proxy.size, wormSize: size)
+                    let tail = centerline.first ?? .zero
+                    let head = centerline.last ?? .zero
+                    let center = CGPoint(x: (tail.x + head.x) / 2, y: (tail.y + head.y) / 2)
+                    let angle = Angle(radians: atan2(head.y - tail.y, head.x - tail.x))
+
+                    Capsule()
+                        .fill(Color.black.opacity(0.001))
+                        .frame(width: size.length + 28, height: size.thickness + 26)
+                        // Keep the gesture on the capsule's local bounds. Applying
+                        // it after `position` makes that wrapper fill the canvas,
+                        // turning every screen tap into a worm tap.
+                        .contentShape(Capsule())
+                        .onTapGesture { onTap(0.5) }
+                        .rotationEffect(angle)
+                        .position(center)
+                }
+            }
+        }
+    }
+
+    private static func centerline(at time: TimeInterval, in canvas: CGSize, wormSize: Worm.Size) -> [CGPoint] {
+        // A dense closed route gives the shared gait a continuously changing
+        // tangent. There are no corners for the worm to snap through.
+        let pointCount = 96
+        let route: [CGPoint] = (0...pointCount).map { index in
+            let angle = Double(index) / Double(pointCount) * (.pi * 2) + .pi
+            let radialDrift = 1
+                + 0.065 * sin(angle * 3 + 0.7)
+                + 0.035 * sin(angle * 5 + 2.1)
+            return CGPoint(
+                x: canvas.width * (0.50 + 0.53 * CGFloat(radialDrift * cos(angle))),
+                y: canvas.height * (0.54 + 0.40 * CGFloat(radialDrift * sin(angle)))
+            )
+        }
+        let wrapped = (time.truncatingRemainder(dividingBy: circuitDuration) + circuitDuration)
+            .truncatingRemainder(dividingBy: circuitDuration)
+        let progress = wrapped / circuitDuration
+        return Worm.crawlCenterline(
+            along: route,
+            size: wormSize,
+            progress: progress,
+            seed: 29
+        )
     }
 }
 
@@ -2586,8 +3037,8 @@ private struct HomeWormNameTag: View {
     let entranceStart: Double?
     let gulpStart: Double?
     let restCenter: CGPoint
-    let fromSize: OnboardingWormSize
-    let toSize: OnboardingWormSize
+    let fromSize: Worm.Size
+    let toSize: Worm.Size
     let entranceDuration: Double
     let settleDuration: Double
     let viewport: CGSize
@@ -3191,9 +3642,28 @@ private extension AnyTransition {
     }
 }
 
-#Preview {
+#Preview("Home") {
     NavigationStack {
         WormHomeView()
+    }
+    .environment(SpotifyMusicNode())
+    .environment(AppleMusicNode())
+    .environment(YouTubeCultureNode())
+    .environment(ContactsNode())
+    .environment(PhotosNode())
+    .environment(CalendarNode())
+    .environment(SelfieNode())
+    .environment(PromptNode())
+    .environment(TasteProfile())
+    .environment(NodeProgression(scheduler: UnlockNotificationScheduler()))
+}
+
+/// The real Home view in its normal live-digging state. The log runs on the
+/// compressed preview timeline so layout, scrolling, screenshots, and the
+/// bottom activity line can all be adjusted directly on the canvas.
+#Preview("Home — digging") {
+    NavigationStack {
+        WormHomeView(previewsDiggingState: true)
     }
     .environment(SpotifyMusicNode())
     .environment(AppleMusicNode())
@@ -3225,7 +3695,7 @@ private struct DeliveryTimePickerPreviewHost: View {
     var body: some View {
         GeometryReader { geo in
             let W = geo.size.width, H = geo.size.height
-            let settledSize = OnboardingWormSize(length: 150, thickness: 24)
+            let settledSize = Worm.Size.afterMusic
             ZStack {
                 DeliveryTimeBackdrop(time: liveTime)
                     .zIndex(0)

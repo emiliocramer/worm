@@ -17,6 +17,7 @@ enum PromptCaptureValue {
 /// controls and place its own confirm button wherever it likes.
 struct PromptCaptureView: View {
     let entry: NodeCatalogEntry
+    let wormSize: Worm.Size
     let ink: Color
     let paper: Color
     var onCancel: () -> Void
@@ -95,11 +96,11 @@ struct PromptCaptureView: View {
     private var waitingWorm: some View {
         VStack(spacing: 8) {
             OnboardingWormGlyph(
-                size: OnboardingWormSize(length: 96, thickness: 16),
+                size: wormSize,
                 color: ink.opacity(0.85),
                 eyeColor: paper
             )
-            .frame(width: 190, height: 68)
+            .frame(width: max(190, wormSize.length + 52), height: max(68, wormSize.thickness * 4))
             Text("he's waiting")
                 .font(.system(size: 13, weight: .medium, design: .rounded))
                 .foregroundStyle(ink.opacity(0.35))
@@ -389,6 +390,7 @@ private let previewPaper = Color(red: 0.97, green: 0.96, blue: 0.93)
 #Preview("text") {
     PromptCaptureView(
         entry: NodeCatalog.entry("ideal-saturday")!,
+        wormSize: .afterMusic,
         ink: .black,
         paper: previewPaper,
         onCancel: {},
@@ -399,6 +401,7 @@ private let previewPaper = Color(red: 0.97, green: 0.96, blue: 0.93)
 #Preview("choice") {
     PromptCaptureView(
         entry: NodeCatalog.entry("comfort-movie")!,
+        wormSize: .afterMusic,
         ink: .black,
         paper: previewPaper,
         onCancel: {},

@@ -12,18 +12,6 @@ import UIKit
 
 enum DigLane {
     case library, forums, reference, video, records, output, fault
-
-    var color: Color {
-        switch self {
-        case .library:   DiggingLog.libraryGreen
-        case .forums:    DiggingLog.forumsRed
-        case .reference: DiggingLog.refBlue
-        case .video:     DiggingLog.videoMagenta
-        case .records:   DiggingLog.recordsGold
-        case .output:    DiggingLog.outputMagenta
-        case .fault:     DiggingLog.grey
-        }
-    }
 }
 
 struct DigStep {
@@ -58,35 +46,8 @@ private struct ViewedTextAnchorKey: PreferenceKey {
 // MARK: - Content + palette
 
 enum DiggingLog {
-    // Verb-family colors.
-    static let indigo  = Color(red: 0.227, green: 0.169, blue: 0.902) // discovery
-    static let orange  = Color(red: 0.910, green: 0.380, blue: 0.118) // reading
-    static let green   = Color(red: 0.118, green: 0.620, blue: 0.235) // media
-    static let maroon  = Color(red: 0.620, green: 0.106, blue: 0.106) // extract
-    static let magenta = Color(red: 0.769, green: 0.118, blue: 0.804) // synthesis
-    static let grey    = Color(red: 0.541, green: 0.541, blue: 0.541) // fault
-
-    // Source-lane (status square) colors.
-    static let libraryGreen  = Color(red: 0.208, green: 0.769, blue: 0.118)
-    static let forumsRed     = Color(red: 0.941, green: 0.118, blue: 0.118)
-    static let refBlue       = Color(red: 0.180, green: 0.357, blue: 1.000)
-    static let videoMagenta  = Color(red: 0.878, green: 0.118, blue: 0.804)
-    static let recordsGold   = Color(red: 0.886, green: 0.702, blue: 0.235)
-    static let outputMagenta = Color(red: 0.769, green: 0.118, blue: 0.804)
-
     static let ink   = Color(red: 0.078, green: 0.078, blue: 0.086)
     static let paper = Color(red: 0.97, green: 0.96, blue: 0.93)
-
-    static func verbColor(_ verb: String) -> Color {
-        switch verb {
-        case "PROCESS", "SCANNING", "CONNECTING", "CRAWLING", "QUEUEING": indigo
-        case "FINDING", "READING", "BROWSING", "TRACING", "COMPARING":    orange
-        case "WATCHING", "LISTENING":                                     green
-        case "EXTRACTING", "SAVING":                                      maroon
-        case "SYNTHESIZING", "RANKING", "SKIPPING":                       magenta
-        default:                                                          grey  // faults
-        }
-    }
 
     /// Screenshot metadata → a fake browser chrome url + a page title. If a bundled
     /// image asset named the same as the key exists, the iframe shows it instead of
@@ -126,33 +87,6 @@ enum DiggingLog {
     private static func st(_ o: Double, _ l: DigLane, _ v: String, _ d: String,
                            _ a: String? = nil, _ s: String? = nil) -> DigStep {
         DigStep(offset: o, lane: l, verb: v, desc: d, artifact: a, shot: s)
-    }
-
-    /// Real tracks from the dig's universe — what the worm "brings back" at the end.
-    static let findPool: [(title: String, artist: String)] = [
-        ("Outta My Mind", "The Arcs"),
-        ("Xtal", "Aphex Twin"),
-        ("Armagideon Time", "Willie Williams"),
-        ("You and Me", "Penny & the Quarters"),
-        ("Wreck You", "Lori McKenna"),
-        ("Rushup Edge", "The Tuss"),
-        ("Tezeta", "Mulatu Astatke"),
-        ("Untitled (God)", "SAULT"),
-        ("Real Rock", "Sound Dimension"),
-        ("Mr. Pitiful (Live)", "Otis Redding"),
-        ("Gimme! Gimme! Gimme!", "ABBA"),
-        ("Shock Therapy", "Gel / Cold Brats"),
-    ]
-
-    /// A stable trio for a given dig (seeded off the dig-start), drawn without repeats.
-    static func finds(seed: UInt64, count: Int = 3) -> [(title: String, artist: String)] {
-        var rng = DigRNG(seed: seed == 0 ? 1 : seed)
-        var pool = findPool
-        var out: [(title: String, artist: String)] = []
-        for _ in 0..<min(count, pool.count) {
-            out.append(pool.remove(at: Int.random(in: 0..<pool.count, using: &rng)))
-        }
-        return out
     }
 
     // MARK: The canonical dig stories. Each follows a hero-journey pattern using
@@ -301,11 +235,21 @@ enum DiggingLog {
     ])
 }
 
-// MARK: - Seeded RNG (stable per dig-start → identical log across reopens)
+// MARK: - Seeded RNG (stable per dig-start, avalanched for nearby timestamps)
 
 struct DigRNG: RandomNumberGenerator {
     private var state: UInt64
-    init(seed: UInt64) { state = seed == 0 ? 0x9E3779B97F4A7C15 : seed }
+    init(seed: UInt64) {
+        // Raw Date seeds differ by tiny amounts. Feeding those straight into an
+        // xorshift leaves the high bits nearly empty, which made Int.random's
+        // first 0..<12 draw resolve to journey zero over and over. SplitMix's
+        // avalanche gives adjacent dig starts unrelated first draws.
+        var mixed = seed &+ 0x9E3779B97F4A7C15
+        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58476D1CE4E5B9
+        mixed = (mixed ^ (mixed >> 27)) &* 0x94D049BB133111EB
+        state = mixed ^ (mixed >> 31)
+        if state == 0 { state = 0x9E3779B97F4A7C15 }
+    }
     mutating func next() -> UInt64 {
         state ^= state << 13
         state ^= state >> 7
@@ -324,45 +268,47 @@ struct DiggingLogView: View {
     /// whole system (rows, colors, cursor, iframes, connectors) is visible fast.
     var previewFast: Bool = false
 
-    @AppStorage("worm.digStartedAt") private var digStartRaw: Double = 0
     @AppStorage(NodeProgression.deliveryTestDeadlineKey) private var deliveryTestDeadlineRaw: Double = 0
 
     @State private var entries: [DigEntry] = []
-    /// A page the user tapped open — pinned until the dig auto-opens the next one.
+    /// A page the user explicitly opened from an underlined source line.
     @State private var pinned: DigEntry?
-    /// An auto-opened page the user dismissed (tapped outside) — hidden until the
-    /// dig opens the next one.
-    @State private var dismissedAutoID: Int?
+    /// The terminal follows output until the person starts reading earlier work.
+    @State private var followsLatest = true
+    /// The row pinned to the bottom while live-following. A bound scroll target
+    /// updates in the same layout transaction as an append, avoiding a second,
+    /// asynchronous jump one frame later.
+    @State private var scrollTarget: Int?
+    /// This visual trace belongs to the current Home session. It deliberately
+    /// starts empty every time Home mounts; persisted dig state is not replayed.
+    @State private var sessionStartedAt: Date?
 
-    private let rowHeight: CGFloat = 20
-    private let bottomPad: CGFloat = 12      // the bottom (cursor) row sits just above the screen bottom
-    private let overflowTop: CGFloat = 40    // render past the top edge so the log runs up off-screen
-    private let shotHold: Double = 10        // seconds a screenshot iframe lingers
+    private let livePromptHeight: CGFloat = 34
+    private let bottomPad: CGFloat = 12
 
     var body: some View {
         GeometryReader { geo in
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
                 content(now: ctx.date, size: geo.size)
             }
         }
         .background(DiggingLog.paper.ignoresSafeArea())
-        .onAppear(perform: rebuild)
-        .onChange(of: deliveryTestDeadlineRaw) { _, _ in rebuild() }
+        .onAppear {
+            let start = Date()
+            sessionStartedAt = start
+            rebuild(startingAt: start)
+            followsLatest = true
+        }
+        .onChange(of: deliveryTestDeadlineRaw) { _, _ in
+            rebuild(startingAt: sessionStartedAt ?? Date())
+        }
     }
 
     private func content(now: Date, size: CGSize) -> some View {
         let shown = entries.filter { $0.date <= now }
-        // Fill from the bottom row all the way up and past the top edge (older rows
-        // clip off-screen), reserving the bottom row for the blinking cursor.
-        let usableHeight = size.height - bottomPad + overflowTop
-        let visibleCount = max(1, Int(usableHeight / rowHeight) - 1)
-        let visible = Array(shown.suffix(visibleCount))
+        let terminalEntries = shown
         let blink = Int(now.timeIntervalSinceReferenceDate) % 2 == 0
-        let activeShot = shown.last { $0.step.shot != nil && now.timeIntervalSince($0.date) < shotHold }
-        // A tapped page stays pinned open; the dig replaces it when it opens the next.
-        // A dismissed auto page stays hidden until the dig opens a different one.
-        let auto: DigEntry? = (activeShot?.id == dismissedAutoID) ? nil : activeShot
-        let displayShot = pinned ?? auto
+        let displayShot = pinned
 
         // Card geometry — shared by the frame and the beam overlay.
         let cardW = min(240, size.width - 120)          // narrower: clear paper on both sides
@@ -375,55 +321,93 @@ struct DiggingLogView: View {
         let tr = CGPoint(x: center.x + cardW / 2 - 14, y: center.y - cardH / 2)
 
         return ZStack {
-            // Log stack — bottom-anchored, oldest visible at top, newest one row up,
-            // and a dedicated cursor row pinned to the very bottom.
+            // Scrollable terminal history. The live activity line is deliberately
+            // outside this scroller, fixed to Home's bottom edge.
             // Tap empty space (below the rows) to close an open frame. Sits UNDER
             // the rows so tapping a link hits the row first (which replaces/opens).
             if displayShot != nil {
                 Color.black.opacity(0.001)
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
-                    .onTapGesture { closeFrame(auto: activeShot) }
+                    .onTapGesture { closeFrame() }
                     .zIndex(0)
             }
 
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(visible) { entry in
-                    DigLogRow(timestamp: Self.clock(entry.date), step: entry.step,
-                              viewing: entry.id == displayShot?.id)
-                        .frame(height: rowHeight, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            // A link opens (or replaces the current frame); a non-link
-                            // line just closes whatever's open.
-                            if entry.step.shot != nil { pin(entry) }
-                            else { closeFrame(auto: activeShot) }
-                        }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(terminalEntries) { entry in
+                        DigLogRow(
+                            step: entry.step,
+                            viewing: entry.id == displayShot?.id,
+                            onSourceTap: entry.step.shot == nil ? nil : { pin(entry) }
+                        )
+                        .frame(height: DigLogRow.height(for: entry.step), alignment: .leading)
+                        .id(entry.id)
+                    }
                 }
-                cursorRow(blink: blink)
-                    .frame(height: rowHeight, alignment: .leading)
+                .scrollTargetLayout()
+                .frame(
+                    minHeight: max(0, size.height - livePromptHeight - bottomPad),
+                    alignment: .bottomLeading
+                )
+                .padding(.leading, 10)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .padding(.leading, 10)
-            .padding(.bottom, bottomPad)
-            .animation(.easeOut(duration: 0.24), value: shown.count)
+            .defaultScrollAnchor(.bottom)
+            .scrollPosition(id: $scrollTarget, anchor: .bottom)
+            .padding(.bottom, livePromptHeight + bottomPad)
+            .onChange(of: terminalEntries.last?.id, initial: true) { _, newest in
+                guard followsLatest, let newest else { return }
+                withAnimation(.easeOut(duration: 0.20)) {
+                    scrollTarget = newest
+                }
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 4).onChanged { _ in
+                    if followsLatest {
+                        followsLatest = false
+                    }
+                }
+            )
+            // A normal tap on the research surface dismisses the page. Buttons
+            // above this gesture still open/replace pages, and a drag continues
+            // to belong to the ScrollView.
+            .onTapGesture {
+                guard displayShot != nil else { return }
+                closeFrame()
+            }
             .zIndex(1)
+
+            DigLivePrompt(step: terminalEntries.last?.step, blink: blink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: livePromptHeight, alignment: .leading)
+                .background(DiggingLog.paper)
+                .frame(maxHeight: .infinity, alignment: .bottomLeading)
+                .padding(.leading, 10)
+                .padding(.bottom, bottomPad)
+                .zIndex(2)
 
             // The framed page — smooth SwiftUI transition in/out, per-frame page scan.
             if let shot = displayShot, let key = shot.step.shot {
-                DigIframe(key: key, since: shot.date)
-                    .frame(width: cardW, height: cardH)
-                    .position(center)
-                    .id(shot.id)
-                    .transition(.scale(scale: 0.9).combined(with: .opacity))
-                    .zIndex(2)
+                ZStack(alignment: .topTrailing) {
+                    DigIframe(key: key, since: shot.date)
+
+                    Button { closeFrame() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.black.opacity(0.72))
+                            .frame(width: 28, height: 28)
+                            .background(Color.white.opacity(0.94), in: Circle())
+                            .overlay(Circle().stroke(Color.black.opacity(0.14), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 10, y: -10)
+                    .accessibilityLabel("Close page")
+                }
+                .frame(width: cardW, height: cardH)
+                .position(center)
+                .id(shot.id)
+                .zIndex(3)
             }
-        }
-        .animation(.easeInOut(duration: 0.32), value: displayShot?.id)
-        // The dig opening a new page replaces whatever the user pinned.
-        .onChange(of: activeShot?.id) { _, new in
-            if new != nil { pinned = nil }
         }
         // Beam that points at — and follows — the underlined description text of the
         // row being viewed, tracking it as the log scrolls up.
@@ -461,14 +445,10 @@ struct DiggingLogView: View {
         }
     }
 
-    /// Tap a log line to pin its page open (until the dig opens the next one). Only
-    /// lines that actually have a screenshot open a frame.
-    /// Close whatever frame is open: drop the pin and suppress the current auto page
-    /// until the dig opens the next one.
-    private func closeFrame(auto: DigEntry?) {
+    /// Close the page the person opened. Incoming logs never replace it.
+    private func closeFrame() {
         Haptics.impact(.light)
         pinned = nil
-        dismissedAutoID = auto?.id
     }
 
     private func pin(_ entry: DigEntry) {
@@ -477,36 +457,14 @@ struct DiggingLogView: View {
         pinned = DigEntry(id: entry.id, date: Date(), step: entry.step)
     }
 
-    /// The prompt line at the very bottom: the block cursor, aligned to the text
-    /// column (past where the status square sits). Opacity toggles so it blinks in
-    /// place with no layout shift.
-    private func cursorRow(blink: Bool) -> some View {
-        HStack(spacing: 10) {
-            Color.clear.frame(width: 16, height: 16)
-            Text("▉")
-                .font(.system(size: 15, weight: .regular, design: .monospaced))
-                .foregroundColor(DiggingLog.ink)
-                .opacity(blink ? 1 : 0)
-        }
-    }
-
     // MARK: - Timeline
 
-    private func rebuild() {
+    private func rebuild(startingAt sessionStart: Date) {
         if previewFast {
             entries = Self.previewSchedule()
             return
         }
-        let now = Date()
-        let stored = digStartRaw > 0 ? Date(timeIntervalSinceReferenceDate: digStartRaw) : nil
-        let digStart: Date
-        if let stored, now < nextDelivery(from: stored) {
-            digStart = stored                     // same cycle — keep the log continuous
-        } else {
-            digStart = now                        // new cycle — a fresh dig begins now
-            digStartRaw = now.timeIntervalSinceReferenceDate
-        }
-        entries = Self.schedule(digStart: digStart, delivery: nextDelivery(from: digStart))
+        entries = Self.schedule(digStart: sessionStart, delivery: nextDelivery(from: sessionStart))
     }
 
     private func nextDelivery(from date: Date) -> Date {
@@ -521,40 +479,48 @@ struct DiggingLogView: View {
         return today > date ? today : (Calendar.current.date(byAdding: .day, value: 1, to: today) ?? today)
     }
 
-    /// Build the whole cycle's log deterministically: back-to-back activity bursts
-    /// with only short gaps, so the dig keeps running the ENTIRE wait — no long dead
-    /// stretches — right up to a closing burst that lands at delivery.
+    /// Build a deterministic research trace from the authored source journeys.
+    /// A route takes time: a page opens, the worm reads/listens, then follows the
+    /// next lead. We do not fill the gaps with generic "activity" lines.
     static func schedule(digStart: Date, delivery: Date) -> [DigEntry] {
         var out: [(Date, DigStep)] = []
-        var rng = DigRNG(seed: UInt64(bitPattern: Int64(digStart.timeIntervalSinceReferenceDate.rounded())))
+        let milliseconds = Int64((digStart.timeIntervalSinceReferenceDate * 1_000).rounded())
+        var rng = DigRNG(seed: UInt64(bitPattern: milliseconds))
 
         let close = DiggingLog.closingJourney
         let closeLen = close.steps.last?.offset ?? 0
         let closeStart = delivery.addingTimeInterval(-(closeLen + 6))
 
-        // Chain bursts from the dig start until we're about to reach the closing:
-        // burst → short gap → burst → … so activity never stops.
+        // The source stories are authored in research-time seconds. Keep their
+        // pauses legible instead of compressing a whole investigation into a few
+        // seconds; a fresh source event should feel consequential.
+        let activityScale = 0.16
         var t = digStart
         var lastJourney = -1
+        var journeyDeck: [Int] = []
         var guardCount = 0
         while t < closeStart.addingTimeInterval(-20), guardCount < 400 {
             guardCount += 1
-            var idx = Int.random(in: 0..<DiggingLog.journeys.count, using: &rng)
-            if idx == lastJourney { idx = (idx + 1) % DiggingLog.journeys.count }
+            if journeyDeck.isEmpty {
+                journeyDeck = Array(DiggingLog.journeys.indices)
+                journeyDeck.shuffle(using: &rng)
+                if journeyDeck.count > 1, journeyDeck.first == lastJourney {
+                    journeyDeck.swapAt(0, 1)
+                }
+            }
+            let idx = journeyDeck.removeFirst()
             lastJourney = idx
             let j = DiggingLog.journeys[idx]
-            for step in j.steps {
-                out.append((t.addingTimeInterval(step.offset), step))
-            }
-            let dur = j.steps.last?.offset ?? 0
-            let gap = Double.random(in: 25...80, using: &rng)   // brief breather between bursts
+            append(journey: j, startingAt: t, scale: activityScale, into: &out)
+            let dur = (j.steps.last?.offset ?? 0) * activityScale
+            // A route closes before the next one starts. This is the natural
+            // breathing room of research, not a fake idle state.
+            let gap = Double.random(in: 6...18, using: &rng)
             t = t.addingTimeInterval(dur + gap)
         }
 
         // Closing climax, always, ending right at delivery.
-        for step in close.steps {
-            out.append((closeStart.addingTimeInterval(step.offset), step))
-        }
+        append(journey: close, startingAt: closeStart, scale: 1, into: &out)
 
         return out
             .filter { $0.0 <= delivery }
@@ -563,25 +529,122 @@ struct DiggingLogView: View {
             .map { DigEntry(id: $0.offset, date: $0.element.0, step: $0.element.1) }
     }
 
-    /// A compressed, continuously-streaming schedule for previews (~20× faster,
-    /// ~50 min of content), starting a few seconds in the past so lines are already
-    /// present when the canvas opens.
+    /// Every screenshot-backed route opens a source before the authored action
+    /// reads it. This is deliberately specific to the page being shown, and gives
+    /// the browser frame a proper cause-and-effect moment in the transcript.
+    private static func append(
+        journey: DigJourney,
+        startingAt start: Date,
+        scale: Double,
+        into output: inout [(Date, DigStep)]
+    ) {
+        for (index, step) in journey.steps.enumerated() {
+            let date = start.addingTimeInterval(step.offset * scale)
+            let next = index < journey.steps.count - 1 ? journey.steps[index + 1] : nil
+            if let shot = step.shot, let site = DiggingLog.sites[shot] {
+                let host = site.url.split(separator: "/").first.map(String.init)?.uppercased() ?? "SOURCE"
+                let opening = DigStep(
+                    offset: 0,
+                    lane: step.lane,
+                    verb: "OPENING",
+                    desc: "\(host) > \(site.title.uppercased())",
+                    artifact: nil,
+                    shot: nil
+                )
+                let openingLead = max(0.25, min(1.4, scale * 3))
+                output.append((date.addingTimeInterval(-openingLead), opening))
+            }
+            output.append((date, expanded(step, next: next, ordinal: index)))
+
+            // Long source reads have a visible, route-specific reasoning step:
+            // the exact lead being tested against the next named source.
+            guard let next else { continue }
+            let authoredGap = next.offset - step.offset
+            guard authoredGap >= 55 else { continue }
+            let gap = authoredGap * scale
+            let connection = DigStep(
+                offset: 0,
+                lane: .output,
+                verb: "LINKING",
+                desc: "\(step.desc) > \(next.desc) > TESTING CONNECTION",
+                artifact: nil,
+                shot: nil
+            )
+            output.append((date.addingTimeInterval(gap * 0.52), connection))
+        }
+    }
+
+    /// Turn terse authored beats into a readable research trail. The continuation
+    /// is journey-specific—the next real lead—not generic filler, so most lines
+    /// explain both what just happened and where the worm is going next.
+    private static func expanded(_ step: DigStep, next: DigStep?, ordinal: Int) -> DigStep {
+        let continuation: String
+        if let next {
+            switch step.verb {
+            case "PROCESS":
+                continuation = "STARTING WITH \(next.desc)"
+            case "READING":
+                continuation = "PULLING A LEAD TOWARD \(next.desc)"
+            case "TRACING":
+                continuation = "NEXT STOP: \(next.desc)"
+            case "BROWSING", "CRAWLING":
+                continuation = "RELATED HIT: \(next.desc)"
+            case "LISTENING", "WATCHING":
+                continuation = "CHECKING AGAINST \(next.desc)"
+            case "FINDING":
+                continuation = "LEAD OPENS \(next.desc)"
+            case "COMPARING":
+                continuation = "MATCHING AGAINST \(next.desc)"
+            case "SAVING", "EXTRACTING":
+                continuation = "QUEUED BEFORE \(next.desc)"
+            case "RANKING", "SYNTHESIZING", "SKIPPING":
+                continuation = "NEXT PASS: \(next.desc)"
+            default:
+                let labels = ["NEXT", "FOLLOWING", "CROSS-CHECKING"]
+                continuation = "\(labels[ordinal % labels.count]): \(next.desc)"
+            }
+        } else {
+            let endings = [
+                "ROUTE CLOSED; NOTE SAVED",
+                "SOURCE TRAIL COMPLETE",
+                "EVIDENCE ADDED TO THE DIG"
+            ]
+            continuation = endings[ordinal % endings.count]
+        }
+
+        return DigStep(
+            offset: step.offset,
+            lane: step.lane,
+            verb: step.verb,
+            desc: "\(step.desc) > \(continuation)",
+            artifact: step.artifact,
+            shot: step.shot
+        )
+    }
+
+    /// A deliberately paced preview stream. It starts with an in-progress source
+    /// route so the Home canvas opens on real evidence and a visible browser frame.
     static func previewSchedule() -> [DigEntry] {
         let now = Date()
         var out: [(Date, DigStep)] = []
         var rng = DigRNG(seed: 20_240_607)
-        var t = now.addingTimeInterval(-9)
+        var t = now.addingTimeInterval(-16)
         let scale = 0.05
-        let gap = 2.5
+        let gap = 2.0
         var last = -1
+        var journeyDeck: [Int] = []
         for _ in 0..<120 {
-            var idx = Int.random(in: 0..<DiggingLog.journeys.count, using: &rng)
-            if idx == last { idx = (idx + 1) % DiggingLog.journeys.count }
+            if journeyDeck.isEmpty {
+                journeyDeck = Array(DiggingLog.journeys.indices)
+                journeyDeck.shuffle(using: &rng)
+                if journeyDeck.count > 1, journeyDeck.first == last {
+                    journeyDeck.swapAt(0, 1)
+                }
+            }
+            let idx = journeyDeck.removeFirst()
             last = idx
             let j = DiggingLog.journeys[idx]
-            for step in j.steps {
-                out.append((t.addingTimeInterval(step.offset * scale), step))
-            }
+            append(journey: j, startingAt: t, scale: scale, into: &out)
             let burstLen = (j.steps.last?.offset ?? 0) * scale
             t = t.addingTimeInterval(burstLen + gap)
         }
@@ -591,47 +654,83 @@ struct DiggingLogView: View {
             .map { DigEntry(id: $0.offset, date: $0.element.0, step: $0.element.1) }
     }
 
-    private static func clock(_ date: Date) -> String {
-        let c = Calendar.current.dateComponents([.hour, .minute, .second], from: date)
-        return String(format: "%02d:%02d:%02d", c.hour ?? 0, c.minute ?? 0, c.second ?? 0)
-    }
 }
 
 // MARK: - Log row
 
-/// One log line: status square + timestamp + colored verb + description (with its
-/// one artifact word bold-underlined). The cursor is a separate bottom row.
+/// One compact research event. The lane dot, quiet clock, strong action, and
+/// description create a readable hierarchy without turning each row into a card.
 private struct DigLogRow: View {
-    let timestamp: String
     let step: DigStep
     /// True while its screenshot is open — the whole description underlines to read
     /// as "this is what's being viewed."
     var viewing: Bool = false
+    /// Only screenshot-backed, underlined source text receives this action.
+    var onSourceTap: (() -> Void)? = nil
 
+    private var isRouteOrigin: Bool { step.verb == "PROCESS" }
+    private var isSourceVisit: Bool { step.shot != nil }
+    private var isReasoning: Bool { step.verb == "LINKING" }
+
+    static func height(for step: DigStep) -> CGFloat {
+        if step.verb == "PROCESS" { return 46 }
+        if step.shot != nil { return 32 }
+        return 25
+    }
+
+    @ViewBuilder
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            RoundedRectangle(cornerRadius: 0, style: .continuous)
-                .fill(step.lane.color)
-                .frame(width: 16, height: 16)
-            HStack(spacing: 0) {
-                prefix.fixedSize()
-                // Report the description's bounds only while viewing, so the beam
-                // can point at (and follow) this exact text.
-                descriptionText
-                    .anchorPreference(key: ViewedTextAnchorKey.self, value: .bounds) {
-                        viewing ? $0 : nil
-                    }
+        if isSourceVisit {
+            Button {
+                onSourceTap?()
+            } label: {
+                rowContent
             }
-            .font(.system(size: 15, weight: .regular, design: .monospaced))
-            .lineLimit(1)
-            .truncationMode(.tail)
+            .buttonStyle(.plain)
+        } else {
+            rowContent
         }
     }
 
-    private var prefix: Text {
-        Text(timestamp + "-").foregroundColor(DiggingLog.ink)
-            + Text(step.verb).foregroundColor(DiggingLog.verbColor(step.verb))
-            + Text("-").foregroundColor(DiggingLog.ink)
+    private var rowContent: some View {
+        Group {
+            if isRouteOrigin {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(step.verb)
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(DiggingLog.ink.opacity(0.42))
+                    descriptionText
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .anchorPreference(key: ViewedTextAnchorKey.self, value: .bounds) {
+                            viewing ? $0 : nil
+                        }
+                }
+                .padding(.vertical, 5)
+                .padding(.horizontal, 5)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(step.verb)
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(DiggingLog.ink.opacity(0.42))
+                        .frame(width: 76, alignment: .leading)
+                    descriptionText
+                        .font(.system(size: 13, weight: isSourceVisit ? .semibold : .regular, design: .rounded))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .anchorPreference(key: ViewedTextAnchorKey.self, value: .bounds) {
+                            viewing ? $0 : nil
+                        }
+                }
+                .padding(.horizontal, 5)
+                .padding(.leading, isReasoning ? 12 : 0)
+                .opacity(isReasoning ? 0.5 : 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(viewing ? DiggingLog.ink.opacity(0.045) : .clear)
     }
 
     private var descriptionText: Text {
@@ -646,6 +745,40 @@ private struct DigLogRow: View {
         return Text(pre).foregroundColor(DiggingLog.ink).underline(u)
             + Text(artifact).foregroundColor(DiggingLog.ink).bold().underline(u)
             + Text(post).foregroundColor(DiggingLog.ink).underline(u)
+    }
+}
+
+/// The terminal's bottom edge behaves like a model's live work indicator: it
+/// keeps changing between substantive rows and makes the crawler feel occupied.
+private struct DigLivePrompt: View {
+    let step: DigStep?
+    let blink: Bool
+
+    private var current: (verb: String, detail: String) {
+        guard let step else { return ("PROCESS", "OPENING TODAY'S DIG") }
+        return (step.verb, step.desc)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(current.verb)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(DiggingLog.ink.opacity(0.58))
+            Text(current.detail)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(DiggingLog.ink.opacity(0.76))
+                .lineLimit(1)
+            Text("▍")
+                .font(.system(size: 12, weight: .regular, design: .rounded))
+                .foregroundStyle(DiggingLog.ink)
+                .opacity(blink ? 1 : 0)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 2)
+        .padding(.top, 8)
+        .overlay(alignment: .top) {
+            Rectangle().fill(DiggingLog.ink.opacity(0.12)).frame(height: 1)
+        }
     }
 }
 
@@ -787,7 +920,7 @@ private struct DigComponentsPreview: View {
             DiggingLog.paper.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(Array(samples.enumerated()), id: \.offset) { i, step in
-                    DigLogRow(timestamp: String(format: "12:15:%02d", i + 3), step: step)
+                    DigLogRow(step: step)
                 }
                 DigIframe(key: "wiki_metro")
                     .frame(width: 260, height: 320)

@@ -1,12 +1,45 @@
 import Foundation
 import Observation
 
+struct FoundSongEditorial: Codable, Hashable {
+    let journeyID: String
+    let journeyTitle: String
+    let routeSummary: String
+    let scoutQuery: String?
+    let scoutReason: String
+    let evidence: [String]
+    let confidence: Double?
+    let assayScore: Double?
+}
+
 /// A resolved recommendation for the daily reveal. Artwork is optional so the UI
 /// can show a neutral placeholder rather than a mismatched cover.
 struct FoundSong: Codable, Hashable {
     let title: String
     let artist: String
     let artwork: String?
+    let spotifyURL: String?
+    let previewURL: String?
+    let why: String?
+    let editorial: FoundSongEditorial?
+
+    init(
+        title: String,
+        artist: String,
+        artwork: String?,
+        spotifyURL: String? = nil,
+        previewURL: String? = nil,
+        why: String? = nil,
+        editorial: FoundSongEditorial? = nil
+    ) {
+        self.title = title
+        self.artist = artist
+        self.artwork = artwork
+        self.spotifyURL = spotifyURL
+        self.previewURL = previewURL
+        self.why = why
+        self.editorial = editorial
+    }
 }
 
 /// The immutable inputs needed to sync one daily dig. Keeping these separate
@@ -64,7 +97,7 @@ final class DigCycleCoordinator {
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         let seconds = total % 60
-        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if hours > 0 { return "\(hours)h \(minutes)m \(seconds)s" }
         if minutes > 0 { return "\(minutes)m \(seconds)s" }
         return "\(seconds)s"
     }
@@ -148,7 +181,28 @@ final class DigCycleCoordinator {
     }
 
     private func mapped(_ recommendations: [WormAPI.TodayRec]) -> [FoundSong] {
-        recommendations.sorted { $0.rank < $1.rank }.prefix(3).map { FoundSong(title: $0.title, artist: $0.artist, artwork: $0.artworkUrl) }
+        recommendations.sorted { $0.rank < $1.rank }.prefix(3).map {
+            FoundSong(
+                title: $0.title,
+                artist: $0.artist,
+                artwork: $0.artworkUrl,
+                spotifyURL: $0.spotifyUrl,
+                previewURL: $0.previewUrl,
+                why: $0.why,
+                editorial: $0.editorial.map {
+                    FoundSongEditorial(
+                        journeyID: $0.journeyId,
+                        journeyTitle: $0.journeyTitle,
+                        routeSummary: $0.routeSummary,
+                        scoutQuery: $0.scoutQuery,
+                        scoutReason: $0.scoutReason,
+                        evidence: $0.evidence,
+                        confidence: $0.confidence,
+                        assayScore: $0.assayScore
+                    )
+                }
+            )
+        }
     }
 
     private func resolvedDeadline(input: DigCycleSyncInput, testDeadline: TimeInterval, now: Date) -> Date {

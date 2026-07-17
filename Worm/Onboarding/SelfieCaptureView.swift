@@ -234,35 +234,18 @@ private struct ShutterButtonStyle: ButtonStyle {
 
 // MARK: - The worm, waiting for his snack
 
-struct OnboardingWormSize: Equatable {
-    var length: CGFloat
-    var thickness: CGFloat
-
-    static let seed = OnboardingWormSize(length: 15, thickness: 16)
-    static let afterSelfie = OnboardingWormSize(length: 30, thickness: 16)
-    static let afterMusic = OnboardingWormSize(length: 118, thickness: 16)
-
-    func interpolated(to target: OnboardingWormSize, progress: CGFloat) -> OnboardingWormSize {
-        let p = min(max(progress, 0), 1)
-        return OnboardingWormSize(
-            length: length + (target.length - length) * p,
-            thickness: thickness + (target.thickness - thickness) * p
-        )
-    }
-}
-
 /// The onboarding worm, drawn full-screen so he's never clipped. When
 /// `gulpStart` lands he pops fat for a beat, hops, and settles at the next
 /// learned size.
 struct SnackingWorm: View {
     var restCenter: CGPoint
     var gulpStart: Double?
-    var fromSize: OnboardingWormSize
-    var toSize: OnboardingWormSize
+    var fromSize: Worm.Size
+    var toSize: Worm.Size
     var color: Color
     var eyeColor: Color
 
-    private static let worm = Worm.snacking
+    private static let worm = Worm.character
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -310,11 +293,11 @@ struct SnackingWorm: View {
 /// metrics as `SnackingWorm`, so the length users just watched grow is the
 /// length they keep seeing in the next step.
 struct OnboardingWormGlyph: View {
-    var size: OnboardingWormSize
+    var size: Worm.Size
     var color: Color
     var eyeColor: Color
 
-    private static let worm = Worm.snacking
+    private static let worm = Worm.character
 
     var body: some View {
         TimelineView(.animation) { timeline in
